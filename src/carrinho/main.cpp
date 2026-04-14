@@ -4,7 +4,7 @@
 #include <esp_wifi.h>
 
 #include "Mensagens.h"
-#include "ControleMotor.h"
+#include "Motor.h"
 #include "LeitorEncoder.h"
 #include "Memoria.h"
 
@@ -28,8 +28,8 @@
 uint8_t mac_esp_principal;
 esp_now_peer_info_t peerInfo;
 
-Motor motor0 = {PH_IN1, PH_IN2, 0, 0};
-Motor motor1 = {PH_IN3, PH_IN4, 0, 0};
+Motor motor0 = {0};
+Motor motor1 = {0};
 Encoder encoder0 = {ENC0_PINA, ENC0_PINB, 0, 0, 0.0};
 Encoder encoder1 = {ENC1_PINA, ENC1_PINB, 0, 0, 0.0};
 
@@ -117,16 +117,16 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len)
   switch (pacote.tipo)
   {
   case COMANDO_MOVIMENTO:
-    motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
-    motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
+    // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
+    // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
     millis_ttl = millis();
     break;
 
   case COMANDO_MOVIMENTO_GLOBAL:
     if (memoria.indice < MAX_ROBOS)
     {
-      motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
-      motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
+      // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
+      // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
       millis_ttl = millis();
     }
     break;
@@ -179,10 +179,10 @@ void setup()
                 memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
   Serial.printf("ID: %d\n", memoria.indice);
 
-  pinMode(motor0.pin0, OUTPUT);
-  pinMode(motor0.pin1, OUTPUT);
-  pinMode(motor1.pin0, OUTPUT);
-  pinMode(motor1.pin1, OUTPUT);
+  motor0 = criarMotor(PH_IN1, PH_IN2, 0);
+  motor1 = criarMotor(PH_IN3, PH_IN4, 1);
+  tocarSomMotor(&motor0, 1000, 500);
+  tocarSomMotor(&motor1, 1000, 500);
 
   pinMode(encoder0.pinA, INPUT_PULLUP);
   pinMode(encoder0.pinB, INPUT_PULLUP);
@@ -215,15 +215,15 @@ void loop()
 
   if (millis_atual - millis_att > DELAY)
   {
-    atualizarVelocidade(&motor0);
-    atualizarVelocidade(&motor1);
+    // atualizarVelocidade(&motor0);
+    // atualizarVelocidade(&motor1);
     millis_att = millis_atual;
   }
 
   if (millis_atual - millis_ttl > TTL_TIME)
   {
-    motor0.velocidadeAlvo = 0;
-    motor1.velocidadeAlvo = 0;
+    // motor0.velocidadeAlvo = 0;
+    // motor1.velocidadeAlvo = 0;
     millis_ttl = millis_atual;
   }
 }
