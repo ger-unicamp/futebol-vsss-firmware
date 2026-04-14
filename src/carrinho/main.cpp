@@ -5,7 +5,7 @@
 
 #include "Mensagens.h"
 #include "Motor.h"
-#include "LeitorEncoder.h"
+#include "Encoder.h"
 #include "Memoria.h"
 
 #define DEBUG
@@ -30,8 +30,8 @@ esp_now_peer_info_t peerInfo;
 
 Motor motor0 = {0};
 Motor motor1 = {0};
-Encoder encoder0 = {ENC0_PINA, ENC0_PINB, 0, 0, 0.0};
-Encoder encoder1 = {ENC1_PINA, ENC1_PINB, 0, 0, 0.0};
+Encoder encoder0 = {0};
+Encoder encoder1 = {0};
 
 Mensagem msg;
 bool pareado = false;
@@ -40,6 +40,9 @@ unsigned long millis_ttl = 0;
 unsigned long millis_att = 0;
 
 DadosConfig memoria;
+
+CRIAR_ISR_ENCODER(isr0, encoder0)
+CRIAR_ISR_ENCODER(isr1, encoder1)
 
 // Função auxiliar para garantir que o rádio está na lista de transmissores permitidos
 void registrar_peer_radio(const uint8_t *mac_radio)
@@ -150,8 +153,9 @@ void setup()
 {
   Serial.begin(115200);
   delay(500);
-  Serial.println("Carrinho ligando...");
+  Serial.println("A inicializar o carrinho...");
 
+  // inicia memoria e tenta carregar o MAC do rádio principal para pareamento automático
   if (inicializar_memoria() && carregar_config(&memoria))
   {
     pareado = true;
@@ -179,20 +183,18 @@ void setup()
                 memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
   Serial.printf("ID: %d\n", memoria.indice);
 
+  // Configura os motores
   motor0 = criarMotor(PH_IN1, PH_IN2, 0);
   motor1 = criarMotor(PH_IN3, PH_IN4, 1);
   tocarSomMotor(&motor0, 1000, 500);
   tocarSomMotor(&motor1, 1000, 500);
+  // Configura os encoders e as interrupções
+  inicializarEncoder(&encoder0, ENC0_PINA, ENC0_PINB);
+  inicializarEncoder(&encoder1, ENC1_PINA, ENC1_PINB);
+  attachInterrupt(digitalPinToInterrupt(encoder0.pinA), isr0, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoder1.pinA), isr1, RISING);
 
-  pinMode(encoder0.pinA, INPUT_PULLUP);
-  pinMode(encoder0.pinB, INPUT_PULLUP);
-  pinMode(encoder1.pinA, INPUT_PULLUP);
-  pinMode(encoder1.pinB, INPUT_PULLUP);
-
-  attachInterrupt(digitalPinToInterrupt(encoder0.pinA), isr_encoder0, RISING);
-  attachInterrupt(digitalPinToInterrupt(encoder1.pinA), isr_encoder1, RISING);
-
-  ESP_ERROR_CHECK(esp_netif_init());
+  // Configura o Wi-Fi e o ESP-NOW
   ESP_ERROR_CHECK(esp_event_loop_create_default());
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -200,13 +202,14 @@ void setup()
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
-
   if (esp_now_init() != ESP_OK)
     return;
   esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
 
+  // Incicializa os timers
   millis_ttl = millis();
   millis_att = millis();
+  Serial.println("Carrinho iniciado com sucesso!");
 }
 
 void loop()
