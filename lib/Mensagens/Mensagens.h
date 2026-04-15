@@ -3,6 +3,8 @@
 
 #define MAX_ROBOS 6
 #define SENHA_PAREAMENTO "GERVSSS"
+#define ID_TRANSMISSOR 0
+#define ID_BROADCAST 255
 
 enum TipoComando : uint8_t
 {
@@ -15,8 +17,9 @@ enum TipoComando : uint8_t
 
 typedef struct __attribute__((packed)) Mensagem
 {
-  uint8_t tipo;   // O código do TipoComando (1 byte)
-  uint8_t indice; // Indice do carrinho (1 byte)
+  uint8_t tipo;             // O código do TipoComando (1 byte)
+  uint8_t indice_destino;   // Indice do carrinho (1 byte)
+  uint8_t indice_remetente; // Indice do carrinho remetente, útil para respostas e comandos globais (1 byte)
 
   union Payload
   {
@@ -36,6 +39,11 @@ typedef struct __attribute__((packed)) Mensagem
     {
       char senha[8];
     } pareamento;
+
+    struct __attribute__((packed))
+    {
+      uint8_t rssi;
+    } echo;
 
   } payload;
 } Mensagem;

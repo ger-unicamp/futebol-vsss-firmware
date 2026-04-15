@@ -25,6 +25,7 @@
 #define DELAY 1000 / FREQ_ATT
 #define TTL_TIME 100
 
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t mac_esp_principal;
 esp_now_peer_info_t peerInfo;
 
@@ -89,61 +90,77 @@ void OnDataRecv(const esp_now_recv_info_t *info_remetente, const uint8_t *dados,
       {
         pareado = true;
         Serial.println("Pareamento concluído com sucesso e salvo na memória!");
-      }
-      else
-      {
-        Serial.println("Erro ao tentar salvar o MAC na memória.");
+        // =======================================================
+        // [NOVO] Responde ao transmissor para confirmar o pareamento
+        // =======================================================
+        Mensagem msg_resposta;
+        msg_resposta.tipo = COMANDO_PAREAMENTO;
+        msg_resposta.indice = 0; //
+        esp_now_send(broadcastAddress, (uint8_t *)&msg_resposta, sizeof(Mensagem));
       }
     }
-    return; // Para a execução aqui, pois o comando era só para parear
-  }
-
-  // ---------------------------------------------------------
-  // 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS (MOVIMENTO)
-  // ---------------------------------------------------------
-  // Se ainda não estiver pareado, ignora qualquer outro comando
-  if (!pareado)
-    return;
-
-  // Verifica se o MAC de quem enviou é o mesmo que está salvo na memória
-  for (int i = 0; i < 6; i++)
-  {
-    if (mac[i] != memoria.mac_esp_principal[i])
+    else
     {
-      return; // MAC não autorizado, ignora o pacote
+      Serial.println("Erro ao tentar salvar o MAC na memória.");
     }
   }
+  return; // Para a execução aqui, pois o comando era só para parear
+}
 
-  // ---------------------------------------------------------
-  // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
-  // ---------------------------------------------------------
-  switch (pacote.tipo)
+// ---------------------------------------------------------
+// 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS (MOVIMENTO)
+// ---------------------------------------------------------
+// Se ainda não estiver pareado, ignora qualquer outro comando
+if (!pareado)
+  return;
+
+// Verifica se o MAC de quem enviou é o mesmo que está salvo na memória
+for (int i = 0; i < 6; i++)
+{
+  if (mac[i] != memoria.mac_esp_principal[i])
   {
-  case COMANDO_MOVIMENTO:
-    // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
-    // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
+    return; // MAC não autorizado, ignora o pacote
+  }
+}
+
+// ---------------------------------------------------------
+// 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
+// ---------------------------------------------------------
+switch (pacote.tipo)
+{
+case COMANDO_MOVIMENTO:
+  // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
+  // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
+  millis_ttl = millis();
+  break;
+
+case COMANDO_MOVIMENTO_GLOBAL:
+  if (memoria.indice < MAX_ROBOS)
+  {
+    // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
+    // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
     millis_ttl = millis();
-    break;
-
-  case COMANDO_MOVIMENTO_GLOBAL:
-    if (memoria.indice < MAX_ROBOS)
-    {
-      // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
-      // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
-      millis_ttl = millis();
-    }
-    break;
-  case COMANDO_ECHO:
-  {
-    // Prepara uma mensagem de texto simples avisando que está vivo
-    char resposta[50];
-    snprintf(resposta, sizeof(resposta), "ECHO_OK - Carrinho ID: %d\n", memoria.indice);
-
-    // Envia de volta EXATAMENTE para o MAC do rádio salvo na memória
-    esp_now_send(memoria.mac_esp_principal, (uint8_t *)resposta, strlen(resposta) + 1); // +1 para incluir o \0 final
-    break;
   }
-  }
+  break;
+case COMANDO_ECHO:
+{
+  Mensagem resposta;
+  // Monta o cabeçalho
+  resposta.tipo = COMANDO_ECHO;
+  resposta.indice = memoria.indice; // O ID de quem está respondendo (o carrinho)
+
+  // Extrai o RSSI (Received Signal Strength Indicator) do pacote recebido
+  // Valores próximos a -30 são excelentes, próximos a -90 são ruins/com perdas
+  resposta.payload.echo.rssi = info_remetente->rx_ctrl->rssi;
+
+  Serial.printf("Recebido ECHO. Respondendo com ID: %d | RSSI: %d dBm\n",
+                resposta.indice, resposta.payload.echo.rssi);
+
+  // Envia de volta a struct inteira para o Broadcast
+  esp_now_send(broadcastAddress, (uint8_t *)&resposta, sizeof(Mensagem));
+  break;
+}
+}
 }
 
 void IRAM_ATTR isr_encoder0() { logicaEncoder(&encoder0); }
@@ -154,35 +171,6 @@ void setup()
   Serial.begin(115200);
   delay(500);
   Serial.println("A inicializar o carrinho...");
-
-  // inicia memoria e tenta carregar o MAC do rádio principal para pareamento automático
-  if (inicializar_memoria() && carregar_config(&memoria))
-  {
-    pareado = true;
-    Serial.println("Dados carregados!");
-  }
-  else
-  {
-    pareado = false;
-    Serial.println("Falha na Flash ou Configuração não encontrada. Definindo novos valores...");
-    uint8_t mac_novo[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-    memcpy(memoria.mac_esp_principal, mac_novo, 6);
-    memoria.indice = 99;
-    if (salvar_config(&memoria))
-    {
-      Serial.println("Dados salvos com sucesso!");
-    }
-    else
-    {
-      Serial.println("Falha ao salvar.");
-    }
-  }
-  Serial.printf("MAC do transmissor: %02X:%02X:%02X:%02X:%02X:%02X\n",
-                memoria.mac_esp_principal[0], memoria.mac_esp_principal[1],
-                memoria.mac_esp_principal[2], memoria.mac_esp_principal[3],
-                memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
-  Serial.printf("ID: %d\n", memoria.indice);
-  Serial.println("Pareado: " + String(pareado));
 
   // Configura os motores
   motor0 = criarMotor(PH_IN1, PH_IN2, 0);
@@ -207,6 +195,36 @@ void setup()
   if (esp_now_init() != ESP_OK)
     return;
   esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+  registrar_peer_radio(broadcastAddress);
+
+  // inicia memoria e tenta carregar o MAC do rádio principal para pareamento automático
+  if (inicializar_memoria() && carregar_config(&memoria))
+  {
+    pareado = true;
+    Serial.println("Dados carregados!");
+  }
+  else
+  {
+    pareado = false;
+    Serial.println("Falha na Flash ou Configuração não encontrada. Definindo novos valores...");
+    uint8_t mac_novo[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    memcpy(memoria.mac_esp_principal, mac_novo, 6);
+    memoria.indice = 255; // Indice broadcast, ou seja, ainda não tem ID definido
+    if (salvar_config(&memoria))
+    {
+      Serial.println("Dados salvos com sucesso!");
+    }
+    else
+    {
+      Serial.println("Falha ao salvar.");
+    }
+  }
+  Serial.printf("MAC do transmissor: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                memoria.mac_esp_principal[0], memoria.mac_esp_principal[1],
+                memoria.mac_esp_principal[2], memoria.mac_esp_principal[3],
+                memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
+  Serial.printf("ID: %d\n", memoria.indice);
+  Serial.println("Pareado: " + String(pareado));
 
   // Incicializa os timers
   millis_ttl = millis();
