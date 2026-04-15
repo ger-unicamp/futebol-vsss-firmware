@@ -19,9 +19,9 @@ void IRAM_ATTR logicaEncoder(Encoder *enc)
 {
   // Lê o canal B para determinar a direção
   if (digitalRead(enc->pinB) == HIGH)
-    enc->ticks++;
+    enc->ticks = enc->ticks + 1;
   else
-    enc->ticks--;
+    enc->ticks = enc->ticks - 1;
 }
 
 // Essa função deve ser chamada em uma frequência fixa (ex: a cada 10ms ou 20ms)

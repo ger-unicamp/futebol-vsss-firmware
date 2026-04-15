@@ -63,14 +63,14 @@ void registrar_peer_radio(const uint8_t *mac_radio)
   }
 }
 
-void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len)
+void OnDataRecv(const esp_now_recv_info_t *info_remetente, const uint8_t *dados, int tamanho)
 {
   // Verificação básica de tamanho
-  if (len != sizeof(Mensagem))
+  if (tamanho != sizeof(Mensagem))
     return;
-  u_int8_t *mac = recv_info->src_addr;
+  u_int8_t *mac = info_remetente->src_addr;
   Mensagem pacote;
-  memcpy(&pacote, incomingData, sizeof(pacote));
+  memcpy(&pacote, dados, sizeof(pacote));
 
   // ---------------------------------------------------------
   // 1. TRATAMENTO DO COMANDO DE PAREAMENTO

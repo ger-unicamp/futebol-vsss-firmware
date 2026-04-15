@@ -21,5 +21,4 @@ void IRAM_ATTR logicaEncoder(Encoder *enc);
 void atualizarDeltaTicks(Encoder *enc);
 
 // Macro mágica para gerar as funções ISR na main.cpp de forma genérica
-#define CRIAR_ISR_ENCODER(nome_funcao, instancia_encoder) \
-  void IRAM_ATTR nome_funcao() { logicaEncoder(&instancia_encoder); }
+#define CRIAR_ISR_ENCODER(nome_funcao, instancia_encoder) void IRAM_ATTR nome_funcao() { logicaEncoder(&instancia_encoder); }

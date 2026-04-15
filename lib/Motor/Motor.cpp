@@ -21,9 +21,8 @@ Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir, uint8_t canalLEDC)
   pinMode(m.pinoDir, OUTPUT);
   digitalWrite(m.pinoDir, LOW);
 
-  ledcSetup(m.canalLEDC, FREQ_PWM_ALTA, RESOLUCAO_PWM);
-  ledcAttachPin(m.pinoPWM, m.canalLEDC);
-  ledcWrite(m.canalLEDC, 0);
+  ledcAttach(m.pinoPWM, FREQ_PWM_ALTA, RESOLUCAO_PWM);
+  ledcWrite(m.pinoPWM, 0);
 
   return m;
 }
@@ -76,18 +75,16 @@ void moverMotor(Motor *motor, int pwmDesejado)
     velocidadeAplicada = -velocidadeAplicada;
   }
 
-  ledcSetup(motor->canalLEDC, FREQ_PWM_ALTA, RESOLUCAO_PWM);
-  ledcWrite(motor->canalLEDC, velocidadeAplicada);
+  ledcWrite(motor->pinoPWM, velocidadeAplicada);
 }
 
 void tocarSomMotor(Motor *motor, uint32_t frequencia, uint32_t duracao_ms)
 {
-  ledcSetup(motor->canalLEDC, frequencia, RESOLUCAO_PWM);
-  ledcWrite(motor->canalLEDC, 50);
+  ledcWriteTone(motor->pinoPWM, frequencia);
   delay(duracao_ms);
-  ledcWrite(motor->canalLEDC, 0);
-  ledcSetup(motor->canalLEDC, FREQ_PWM_ALTA, RESOLUCAO_PWM);
-
+  ledcWrite(motor->pinoPWM, 0); // Para o som
+  
+  ledcAttach(motor->pinoPWM, FREQ_PWM_ALTA, RESOLUCAO_PWM);
   // Reseta o estado para evitar que o motor tente "compensar" uma diferença irreal ao voltar a girar
   motor->pwmAtual = 0;
   motor->pwmAlvo = 0;

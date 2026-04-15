@@ -32,7 +32,7 @@ uint8_t tamanho_payload = 0;
 uint8_t buffer_payload[250]; // 250 é o limite seguro do ESP-NOW
 uint8_t indice_buffer = 0;
 
-void OnDataRecv(const uint8_t *mac, const uint8_t *dados, int tamanho)
+void OnDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *dados, int tamanho)
 {
   // Envia os dados pela Serial para o Python usando o cabeçalho RX
   Serial.write(SYNC_1_RX);
