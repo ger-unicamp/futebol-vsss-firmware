@@ -182,12 +182,14 @@ void setup()
                 memoria.mac_esp_principal[2], memoria.mac_esp_principal[3],
                 memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
   Serial.printf("ID: %d\n", memoria.indice);
+  Serial.println("Pareado: " + String(pareado));
 
   // Configura os motores
   motor0 = criarMotor(PH_IN1, PH_IN2, 0);
   motor1 = criarMotor(PH_IN3, PH_IN4, 1);
   tocarSomMotor(&motor0, 1000, 500);
   tocarSomMotor(&motor1, 1000, 500);
+
   // Configura os encoders e as interrupções
   inicializarEncoder(&encoder0, ENC0_PINA, ENC0_PINB);
   inicializarEncoder(&encoder1, ENC1_PINA, ENC1_PINB);
