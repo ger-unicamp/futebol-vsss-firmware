@@ -1,17 +1,10 @@
 #include "Motor.h"
 
-#define FREQ_PWM_ALTA 20000
-#define RESOLUCAO_PWM 10
-
-#define PASSO_MAXIMO 50
-#define INTERVALO_MS 10
-
-Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir, uint8_t canalLEDC)
+Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir)
 {
   Motor m;
   m.pinoPWM = pinoPWM;
   m.pinoDir = pinoDir;
-  m.canalLEDC = canalLEDC;
   m.pwmAtual = 0;
   m.pwmAlvo = 0;
   m.passoMaximo = PASSO_MAXIMO;
@@ -30,10 +23,10 @@ Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir, uint8_t canalLEDC)
 void moverMotor(Motor *motor, int pwmDesejado)
 {
   // 1. Limita o alvo aos limites físicos do PWM
-  if (pwmDesejado > 1023)
-    pwmDesejado = 1023;
-  if (pwmDesejado < -1023)
-    pwmDesejado = -1023;
+  if (pwmDesejado > PID_MAX_PWM)
+    pwmDesejado = PID_MAX_PWM;
+  if (pwmDesejado < PID_MIN_PWM)
+    pwmDesejado = PID_MIN_PWM;
 
   motor->pwmAlvo = pwmDesejado;
 

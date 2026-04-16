@@ -7,6 +7,7 @@
 #include "Motor.h"
 #include "Encoder.h"
 #include "Memoria.h"
+#include "PID.h"
 
 #define DEBUG
 #define CANAL 11
@@ -25,7 +26,6 @@
 #define DELAY 1000 / FREQ_ATT
 #define TTL_TIME 100
 
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t mac_esp_principal;
 esp_now_peer_info_t peerInfo;
 
@@ -44,6 +44,14 @@ DadosConfig memoria;
 
 CRIAR_ISR_ENCODER(isr0, encoder0)
 CRIAR_ISR_ENCODER(isr1, encoder1)
+
+// Instancia os PIDs para cada roda
+PidConfig pidMotor0;
+PidConfig pidMotor1;
+
+// Variáveis alvo (Ticks por ciclo de controle de 16ms)
+float target_ticks_0 = 0; 
+float target_ticks_1 = 0;
 
 // Função auxiliar para garantir que o rádio está na lista de transmissores permitidos
 void registrar_peer_radio(const uint8_t *mac_radio)
@@ -90,77 +98,61 @@ void OnDataRecv(const esp_now_recv_info_t *info_remetente, const uint8_t *dados,
       {
         pareado = true;
         Serial.println("Pareamento concluído com sucesso e salvo na memória!");
-        // =======================================================
-        // [NOVO] Responde ao transmissor para confirmar o pareamento
-        // =======================================================
-        Mensagem msg_resposta;
-        msg_resposta.tipo = COMANDO_PAREAMENTO;
-        msg_resposta.indice = 0; //
-        esp_now_send(broadcastAddress, (uint8_t *)&msg_resposta, sizeof(Mensagem));
+      }
+      else
+      {
+        Serial.println("Erro ao tentar salvar o MAC na memória.");
       }
     }
-    else
+    return; // Para a execução aqui, pois o comando era só para parear
+  }
+
+  // ---------------------------------------------------------
+  // 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS (MOVIMENTO)
+  // ---------------------------------------------------------
+  // Se ainda não estiver pareado, ignora qualquer outro comando
+  if (!pareado)
+    return;
+
+  // Verifica se o MAC de quem enviou é o mesmo que está salvo na memória
+  for (int i = 0; i < 6; i++)
+  {
+    if (mac[i] != memoria.mac_esp_principal[i])
     {
-      Serial.println("Erro ao tentar salvar o MAC na memória.");
+      return; // MAC não autorizado, ignora o pacote
     }
   }
-  return; // Para a execução aqui, pois o comando era só para parear
-}
 
-// ---------------------------------------------------------
-// 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS (MOVIMENTO)
-// ---------------------------------------------------------
-// Se ainda não estiver pareado, ignora qualquer outro comando
-if (!pareado)
-  return;
-
-// Verifica se o MAC de quem enviou é o mesmo que está salvo na memória
-for (int i = 0; i < 6; i++)
-{
-  if (mac[i] != memoria.mac_esp_principal[i])
+  // ---------------------------------------------------------
+  // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
+  // ---------------------------------------------------------
+  switch (pacote.tipo)
   {
-    return; // MAC não autorizado, ignora o pacote
-  }
-}
-
-// ---------------------------------------------------------
-// 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
-// ---------------------------------------------------------
-switch (pacote.tipo)
-{
-case COMANDO_MOVIMENTO:
-  // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
-  // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
-  millis_ttl = millis();
-  break;
-
-case COMANDO_MOVIMENTO_GLOBAL:
-  if (memoria.indice < MAX_ROBOS)
-  {
-    // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
-    // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
+  case COMANDO_MOVIMENTO:
+    // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
+    // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
     millis_ttl = millis();
+    break;
+
+  case COMANDO_MOVIMENTO_GLOBAL:
+    if (memoria.indice < MAX_ROBOS)
+    {
+      // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
+      // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
+      millis_ttl = millis();
+    }
+    break;
+  case COMANDO_ECHO:
+  {
+    // Prepara uma mensagem de texto simples avisando que está vivo
+    char resposta[50];
+    snprintf(resposta, sizeof(resposta), "ECHO_OK - Carrinho ID: %d\n", memoria.indice);
+
+    // Envia de volta EXATAMENTE para o MAC do rádio salvo na memória
+    esp_now_send(memoria.mac_esp_principal, (uint8_t *)resposta, strlen(resposta) + 1); // +1 para incluir o \0 final
+    break;
   }
-  break;
-case COMANDO_ECHO:
-{
-  Mensagem resposta;
-  // Monta o cabeçalho
-  resposta.tipo = COMANDO_ECHO;
-  resposta.indice = memoria.indice; // O ID de quem está respondendo (o carrinho)
-
-  // Extrai o RSSI (Received Signal Strength Indicator) do pacote recebido
-  // Valores próximos a -30 são excelentes, próximos a -90 são ruins/com perdas
-  resposta.payload.echo.rssi = info_remetente->rx_ctrl->rssi;
-
-  Serial.printf("Recebido ECHO. Respondendo com ID: %d | RSSI: %d dBm\n",
-                resposta.indice, resposta.payload.echo.rssi);
-
-  // Envia de volta a struct inteira para o Broadcast
-  esp_now_send(broadcastAddress, (uint8_t *)&resposta, sizeof(Mensagem));
-  break;
-}
-}
+  }
 }
 
 void IRAM_ATTR isr_encoder0() { logicaEncoder(&encoder0); }
@@ -172,31 +164,6 @@ void setup()
   delay(500);
   Serial.println("A inicializar o carrinho...");
 
-  // Configura os motores
-  motor0 = criarMotor(PH_IN1, PH_IN2, 0);
-  motor1 = criarMotor(PH_IN3, PH_IN4, 1);
-  tocarSomMotor(&motor0, 1000, 500);
-  tocarSomMotor(&motor1, 1000, 500);
-
-  // Configura os encoders e as interrupções
-  inicializarEncoder(&encoder0, ENC0_PINA, ENC0_PINB);
-  inicializarEncoder(&encoder1, ENC1_PINA, ENC1_PINB);
-  attachInterrupt(digitalPinToInterrupt(encoder0.pinA), isr0, RISING);
-  attachInterrupt(digitalPinToInterrupt(encoder1.pinA), isr1, RISING);
-
-  // Configura o Wi-Fi e o ESP-NOW
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_start());
-  ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
-  if (esp_now_init() != ESP_OK)
-    return;
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
-  registrar_peer_radio(broadcastAddress);
-
   // inicia memoria e tenta carregar o MAC do rádio principal para pareamento automático
   if (inicializar_memoria() && carregar_config(&memoria))
   {
@@ -207,9 +174,11 @@ void setup()
   {
     pareado = false;
     Serial.println("Falha na Flash ou Configuração não encontrada. Definindo novos valores...");
-    uint8_t mac_novo[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t mac_novo[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     memcpy(memoria.mac_esp_principal, mac_novo, 6);
-    memoria.indice = 255; // Indice broadcast, ou seja, ainda não tem ID definido
+    memoria.indice = 255;
+    memoria.pid0 = {2.5f, 0.8f, 0.01f, 5.0f}; 
+    memoria.pid1 = {2.5f, 0.8f, 0.01f, 5.0f};
     if (salvar_config(&memoria))
     {
       Serial.println("Dados salvos com sucesso!");
@@ -226,6 +195,35 @@ void setup()
   Serial.printf("ID: %d\n", memoria.indice);
   Serial.println("Pareado: " + String(pareado));
 
+  // Configura os motores
+  motor0 = criarMotor(PH_IN1, PH_IN2);
+  motor1 = criarMotor(PH_IN3, PH_IN4);
+  tocarSomMotor(&motor0, 8000, 500);
+  tocarSomMotor(&motor1, 8000, 500);
+
+  // Configura os encoders e as interrupções
+  inicializarEncoder(&encoder0, ENC0_PINA, ENC0_PINB);
+  inicializarEncoder(&encoder1, ENC1_PINA, ENC1_PINB);
+  attachInterrupt(digitalPinToInterrupt(encoder0.pinA), isr0, RISING);
+  attachInterrupt(digitalPinToInterrupt(encoder1.pinA), isr1, RISING);
+
+  // Limites do PWM: no header Motor.h
+  // Configura com os valores guardados na memoria
+  pid_iniciar(&pidMotor0, memoria.pid0.kp, memoria.pid0.ki, memoria.pid0.kd, memoria.pid0.kf, PID_MIN_PWM, PID_MAX_PWM);
+  pid_iniciar(&pidMotor1, memoria.pid1.kp, memoria.pid1.ki, memoria.pid1.kd, memoria.pid1.kf, PID_MIN_PWM, PID_MAX_PWM);
+
+  // Configura o Wi-Fi e o ESP-NOW
+  ESP_ERROR_CHECK(esp_event_loop_create_default());
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+  ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+  ESP_ERROR_CHECK(esp_wifi_start());
+  ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
+  if (esp_now_init() != ESP_OK)
+    return;
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
   // Incicializa os timers
   millis_ttl = millis();
   millis_att = millis();
@@ -238,8 +236,18 @@ void loop()
 
   if (millis_atual - millis_att > DELAY)
   {
-    // atualizarVelocidade(&motor0);
-    // atualizarVelocidade(&motor1);
+    // 1. Atualiza a leitura de Variação (Delta) do Encoder
+    atualizarDeltaTicks(&encoder0);
+    atualizarDeltaTicks(&encoder1);
+
+    // 2. Calcula o PID (saída será um valor de PWM entre -1023 e 1023)
+    float pwm_saida_0 = pid_computar(&pidMotor0, target_ticks_0, encoder0.delta_ticks);
+    float pwm_saida_1 = pid_computar(&pidMotor1, target_ticks_1, encoder1.delta_ticks);
+
+    // 3. Aplica nos motores (assumindo que a sua struct Motor ou biblioteca espera valor com sinal)
+    moverMotor(&motor0, (int) pwm_saida_0);
+    moverMotor(&motor1, (int) pwm_saida_1);
+
     millis_att = millis_atual;
   }
 
