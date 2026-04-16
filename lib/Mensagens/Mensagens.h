@@ -11,6 +11,7 @@ enum TipoComando : uint8_t
   COMANDO_MOVIMENTO = 0x01,
   COMANDO_MOVIMENTO_GLOBAL = 0x02,
   COMANDO_ECHO = 0x03,
+  COMANDO_SET_ID = 0x04,
   COMANDO_PAREAMENTO = 0x99
   // Pode adicionar CMD_TUNING_PID, etc.
 };
@@ -38,12 +39,20 @@ typedef struct __attribute__((packed)) Mensagem
     struct __attribute__((packed))
     {
       char senha[8];
+      uint8_t mac[6];
     } pareamento;
 
     struct __attribute__((packed))
     {
       uint8_t rssi;
+      uint8_t mac[6];
     } echo;
+
+    struct __attribute__((packed))
+    {
+      uint8_t mac_alvo[6]; // O MAC físico do carrinho que precisa mudar de ID
+      uint8_t novo_id;     // O novo ID válido (1 a 6) que ele deve assumir
+    } set_id;
 
   } payload;
 } Mensagem;

@@ -9,6 +9,19 @@
 #include "Memoria.h"
 #include "PID.h"
 
+// Comente esta linha ou mude para 0 para desativar o modo Debug
+#define DEBUG_ENABLE 1 
+
+#if DEBUG_ENABLE
+  #define DEBUG_PRINT(x)     Serial.print(x)
+  #define DEBUG_PRINTLN(x)   Serial.println(x)
+  #define DEBUG_BEGIN(x)     Serial.begin(x)
+#else
+  #define DEBUG_PRINT(x)
+  #define DEBUG_PRINTLN(x)
+  #define DEBUG_BEGIN(x)
+#endif
+
 #define DEBUG
 #define CANAL 11
 
@@ -57,8 +70,7 @@ float target_ticks_1 = 0;
 void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
   // Verificação básica de tamanho
-  if (tamanho != sizeof(Mensagem))
-    return;
+  if (tamanho != sizeof(Mensagem)) return;
   u_int8_t *mac = info_pacote->src_addr;
   Mensagem pacote;
   memcpy(&pacote, dados, sizeof(pacote));
@@ -80,6 +92,17 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       {
         pareado = true;
         Serial.println("Pareamento concluído com sucesso e salvo na memória!");
+
+        Mensagem resposta;
+        resposta.tipo = COMANDO_PAREAMENTO;
+        resposta.indice_destino = ID_TRANSMISSOR;
+        resposta.indice_remetente = memoria.indice;
+        WiFi.macAddress(resposta.payload.pareamento.mac); // Coleta o próprio MAC
+        Serial.printf("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                      resposta.payload.pareamento.mac[0], resposta.payload.pareamento.mac[1],
+                      resposta.payload.pareamento.mac[2], resposta.payload.pareamento.mac[3],
+                      resposta.payload.pareamento.mac[4], resposta.payload.pareamento.mac[5]);
+        esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta));
       }
       else
       {
@@ -138,6 +161,41 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     resposta.indice_destino = ID_TRANSMISSOR; // Responde diretamente para o transmissor
     resposta.payload.echo.rssi = (uint8_t) info_pacote->rx_ctrl->rssi; // Inclui o RSSI da mensagem recebida como parte do payload
     esp_now_send(broadcastAddress,(u_int8_t*) &resposta, sizeof(resposta)); // Envia 
+    break;
+  }
+  case COMANDO_SET_ID:
+  {
+    // Pega o próprio MAC físico para comparar
+    uint8_t meu_mac[6];
+    WiFi.macAddress(meu_mac);
+
+    bool mac_eh_meu = true;
+    for (int i = 0; i < 6; i++) {
+      if (pacote.payload.set_id.mac_alvo[i] != meu_mac[i]) {
+        mac_eh_meu = false;
+        break;
+      }
+    }
+
+    // Se o comando foi direcionado para o MAC deste carrinho físico
+    if (mac_eh_meu)
+    {
+      memoria.indice = pacote.payload.set_id.novo_id; // Atualiza o ID
+      
+      if (salvar_config(&memoria)) {
+        Serial.printf("Novo ID recebido do Python e salvo: %d\n", memoria.indice);
+        
+        // Dispara um ECHO de volta para o Python confirmar que a mudança funcionou
+        Mensagem resposta;
+        resposta.tipo = COMANDO_ECHO;
+        resposta.indice_destino = ID_TRANSMISSOR;
+        resposta.indice_remetente = memoria.indice;
+        resposta.payload.echo.rssi = (uint8_t) info_pacote->rx_ctrl->rssi;
+        memcpy(resposta.payload.echo.mac, meu_mac, 6);
+        
+        esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta));
+      }
+    }
     break;
   }
   }
