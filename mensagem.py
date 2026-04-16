@@ -20,6 +20,9 @@ class PonteESP32:
         # Cabeçalhos de Sincronização (ESP32 -> Python)
         self.SYNC_1_RX = 0xBB
         self.SYNC_2_RX = 0x66
+
+        self.MAX_ROBOS = 6
+        self.robos_ativos = {} # Formato: {"MAC_STR": {"mac_bytes": [...], "id": 1}}
         
         # 3. Inicia a máquina de estados receptora em uma thread separada
         self.rodando = True
@@ -106,6 +109,57 @@ class PonteESP32:
         pacote = struct.pack('BB B', self.SYNC_1_TX, self.SYNC_2_TX, tamanho) + payload_bytes
         self.serial.write(pacote)
 
+    def organizar_ids(self):
+        """
+        Analisa os robôs que responderam ao ECHO.
+        Identifica IDs duplicados ou não configurados (255) e despacha novos IDs.
+        """
+        print("\n--- [DHCP VSSS] Analisando Conflitos de Rede ---")
+        
+        ids_ocupados_validos = set()
+        macs_precisando_id = []
+
+        # 1. Varre todos os robôs conhecidos para separar quem tá OK de quem precisa de ID
+        for mac_str, info in self.robos_ativos.items():
+            id_atual = info['id']
+            
+            # Se for ID de fábrica (255), ID inválido (0) ou maior que o permitido
+            if id_atual == 255 or id_atual == 0 or id_atual > self.MAX_ROBOS:
+                macs_precisando_id.append((mac_str, info['mac_bytes']))
+            
+            # Se o ID for válido, mas JÁ ESTÁ na lista de ocupados (Duplicata!)
+            elif id_atual in ids_ocupados_validos:
+                macs_precisando_id.append((mac_str, info['mac_bytes']))
+            
+            # Se o ID for válido e for o primeiro a reivindicá-lo, tá liberado
+            else:
+                ids_ocupados_validos.add(id_atual)
+
+        # Se ninguém precisa de ID novo, encerra aqui
+        if not macs_precisando_id:
+            print("Todos os robôs estão com IDs únicos e válidos. Nenhuma ação necessária.")
+            return
+
+        # 2. Descobre quais IDs de 1 a MAX_ROBOS estão sobrando
+        ids_livres = [i for i in range(1, self.MAX_ROBOS + 1) if i not in ids_ocupados_validos]
+
+        # 3. Atribui os IDs livres para a fila de MACs problemáticos
+        for mac_str, mac_bytes in macs_precisando_id:
+            if not ids_livres:
+                print(f"[ALERTA] Acabaram os IDs livres! O robô {mac_str} ficará sem ID.")
+                break
+                
+            novo_id = ids_livres.pop(0) # Pega o primeiro ID livre da lista
+            
+            # Chama a função que já criamos para disparar o comando
+            self.enviar_set_id(mac_bytes, novo_id)
+            
+            # Atualiza o dicionário local para refletir a mudança
+            self.robos_ativos[mac_str]['id'] = novo_id 
+            print(f"[*] Robô {mac_str} reconfigurado para o ID {novo_id}")
+            
+        print("------------------------------------------------\n")
+
 
     # ==========================================
     # MÉTODOS AUXILIARES DE COMANDOS
@@ -123,7 +177,7 @@ class PonteESP32:
         print(f"\n[--> SEND] Enviando Comando de PAREAMENTO (Senha: {senha})...")
         self.enviar_mensagem(msg)
 
-    def enviar_echo(self, indice_alvo=99):
+    def enviar_echo(self, indice_alvo=255):
         """Envia o comando de ECHO para verificar quais robôs estão vivos."""
         msg = self.criar_mensagem()
         msg.tipo = self.enums['COMANDO_ECHO']
@@ -210,10 +264,19 @@ class PonteESP32:
             # Transforma os bytes brutos novamente em objeto usando a struct em C
             msg = self.ffi.from_buffer("Mensagem *", raw_bytes)
             
-            # 1. Trata a resposta do comando de ECHO
+            # Trata a resposta do comando de ECHO
             if msg.tipo == self.enums.get('COMANDO_ECHO', 0x03):
-                # Imprime o ID do robô e o sinal de RSSI recebido
-                print(f"\n[<-- RECV ECHO] Robô ID: {msg.indice} | Sinal (RSSI): {msg.payload.echo.rssi} dBm")
+                mac_bytes = msg.payload.echo.mac
+                mac_str = ":".join([f"{b:02X}" for b in mac_bytes])
+                id_recebido = msg.indice_remetente
+                
+                # Salva/Atualiza o robô no nosso dicionário
+                self.robos_ativos[mac_str] = {
+                    "mac_bytes": list(mac_bytes), # Converte para lista Python para facilitar o reenvio
+                    "id": id_recebido
+                }
+                
+                print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {msg.payload.echo.rssi} dBm")
                 return
 
             # 2. Trata comandos de Movimento (se houver alguma confirmação)
@@ -221,6 +284,8 @@ class PonteESP32:
                 print(f"\n[<-- RECV] Mensagem do Robô {msg.indice} | Tipo Comando: 0x{msg.tipo:02X}")
                 print(f"    Velocidade Esq: {msg.payload.movimento.vel_esq}")
                 print(f"    Velocidade Dir: {msg.payload.movimento.vel_dir}")
+
+            
                 
         except Exception as e:
             print(f"Erro ao processar pacote recebido: {e} | Dados brutos: {raw_bytes}")
@@ -251,7 +316,9 @@ if __name__ == "__main__":
 
         # 2. Testa Echo
         esp.enviar_echo()
-        time.sleep(1)
+        time.sleep(1.5)
+
+        esp.organizar_ids()
 
         # 3. Testa Movimento
         esp.enviar_movimento(indice=1, vel_esq=255, vel_dir=-255)
