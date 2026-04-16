@@ -23,6 +23,7 @@ class PonteESP32:
 
         self.MAX_ROBOS = 6
         self.robos_ativos = {} # Formato: {"MAC_STR": {"mac_bytes": [...], "id": 1}}
+        self.timestamp_ultimo_echo = 0.0
         
         # 3. Inicia a máquina de estados receptora em uma thread separada
         self.rodando = True
@@ -182,6 +183,9 @@ class PonteESP32:
         msg = self.criar_mensagem()
         msg.tipo = self.enums['COMANDO_ECHO']
         msg.indice_destino = indice_alvo
+
+        # Marca o tempo em segundos (com precisão de microsegundos) ANTES de enviar
+        self.timestamp_ultimo_echo = time.time()
         
         print(f"\n[--> SEND] Enviando Comando de ECHO...")
         self.enviar_mensagem(msg)
@@ -266,17 +270,23 @@ class PonteESP32:
             
             # Trata a resposta do comando de ECHO
             if msg.tipo == self.enums.get('COMANDO_ECHO', 0x03):
+                # 1. Para o cronômetro e calcula o RTT em milissegundos
+                tempo_atual = time.time()
+                ping_ms = (tempo_atual - self.timestamp_ultimo_echo) * 1000.0
+                
+                # 2. Extrai os dados que já havíamos configurado
                 mac_bytes = msg.payload.echo.mac
                 mac_str = ":".join([f"{b:02X}" for b in mac_bytes])
                 id_recebido = msg.indice_remetente
                 
-                # Salva/Atualiza o robô no nosso dicionário
+                # 3. Salva no "DHCP"
                 self.robos_ativos[mac_str] = {
-                    "mac_bytes": list(mac_bytes), # Converte para lista Python para facilitar o reenvio
+                    "mac_bytes": list(mac_bytes),
                     "id": id_recebido
                 }
                 
-                print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {msg.payload.echo.rssi} dBm")
+                # 4. Imprime o log com o novo medidor de Ping!
+                print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {msg.payload.echo.rssi:3d} dBm | Ping: {ping_ms:.1f} ms")
                 return
 
             # 2. Trata comandos de Movimento (se houver alguma confirmação)
