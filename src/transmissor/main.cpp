@@ -56,10 +56,12 @@ void setup()
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
   esp_wifi_set_max_tx_power(84);
-
   if (esp_now_init() != ESP_OK)
     return;
 
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));// Registra a função de callback para receber dados via ESP-NOW
+
+  // configura o peer de broadcast
   memset(&peerInfo, 0, sizeof(peerInfo));
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
@@ -69,7 +71,6 @@ void setup()
 
   pinMode(LED, OUTPUT);
   digitalWrite(LED, LOW);
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
 
   Serial.println("Transmissor iniciado com sucesso!");
 }

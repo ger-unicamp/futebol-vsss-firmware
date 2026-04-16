@@ -26,6 +26,7 @@
 #define DELAY 1000 / FREQ_ATT
 #define TTL_TIME 100
 
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t mac_esp_principal;
 esp_now_peer_info_t peerInfo;
 
@@ -53,38 +54,19 @@ PidConfig pidMotor1;
 float target_ticks_0 = 0; 
 float target_ticks_1 = 0;
 
-// Função auxiliar para garantir que o rádio está na lista de transmissores permitidos
-void registrar_peer_radio(const uint8_t *mac_radio)
-{
-  esp_now_peer_info_t peerInfo;
-  memset(&peerInfo, 0, sizeof(peerInfo)); // Zera a memória da struct
-  memcpy(peerInfo.peer_addr, mac_radio, 6);
-  peerInfo.channel = CANAL;
-  peerInfo.encrypt = false;
-
-  // Só adiciona se o peer ainda não existir
-  if (!esp_now_is_peer_exist(mac_radio))
-  {
-    if (esp_now_add_peer(&peerInfo) != ESP_OK)
-    {
-      Serial.println("Falha ao registrar o rádio como Peer para envio.");
-    }
-  }
-}
-
-void OnDataRecv(const esp_now_recv_info_t *info_remetente, const uint8_t *dados, int tamanho)
+void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
   // Verificação básica de tamanho
   if (tamanho != sizeof(Mensagem))
     return;
-  u_int8_t *mac = info_remetente->src_addr;
+  u_int8_t *mac = info_pacote->src_addr;
   Mensagem pacote;
   memcpy(&pacote, dados, sizeof(pacote));
 
   // ---------------------------------------------------------
   // 1. TRATAMENTO DO COMANDO DE PAREAMENTO
   // ---------------------------------------------------------
-  if (pacote.tipo == COMANDO_PAREAMENTO)
+  if (pacote.tipo == COMANDO_PAREAMENTO && pacote.indice_remetente == ID_TRANSMISSOR)
   {
     // Compara a senha recebida com a senha hardcoded
     if (strncmp(pacote.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(pacote.payload.pareamento.senha)) == 0)
@@ -129,27 +111,33 @@ void OnDataRecv(const esp_now_recv_info_t *info_remetente, const uint8_t *dados,
   switch (pacote.tipo)
   {
   case COMANDO_MOVIMENTO:
-    // motor0.velocidadeAlvo = pacote.payload.movimento.vel_esq;
-    // motor1.velocidadeAlvo = pacote.payload.movimento.vel_dir;
+    {
+    target_ticks_0 = pacote.payload.movimento.vel_esq;
+    target_ticks_1 = pacote.payload.movimento.vel_dir;
     millis_ttl = millis();
     break;
-
+    }
   case COMANDO_MOVIMENTO_GLOBAL:
     if (memoria.indice < MAX_ROBOS)
     {
-      // motor0.velocidadeAlvo = pacote.payload.movimento_global.vel_esq[memoria.indice];
-      // motor1.velocidadeAlvo = pacote.payload.movimento_global.vel_dir[memoria.indice];
+      target_ticks_0 = pacote.payload.movimento_global.vel_esq[memoria.indice];
+      target_ticks_1 = pacote.payload.movimento_global.vel_dir[memoria.indice];
       millis_ttl = millis();
     }
     break;
   case COMANDO_ECHO:
   {
-    // Prepara uma mensagem de texto simples avisando que está vivo
-    char resposta[50];
-    snprintf(resposta, sizeof(resposta), "ECHO_OK - Carrinho ID: %d\n", memoria.indice);
+    if(pacote.indice_destino != ID_BROADCAST && pacote.indice_destino != memoria.indice)
+      return; // Se o comando de echo não for para broadcast nem para mim, ignora
 
-    // Envia de volta EXATAMENTE para o MAC do rádio salvo na memória
-    esp_now_send(memoria.mac_esp_principal, (uint8_t *)resposta, strlen(resposta) + 1); // +1 para incluir o \0 final
+    // Prepara uma mensagem de texto simples avisando que está vivo
+    Mensagem resposta;
+    // snprintf(resposta, sizeof(resposta), "ECHO_OK - Carrinho ID: %d\n", memoria.indice);
+    resposta.indice_remetente = memoria.indice; // Pode ser útil para o transmissor identificar quem respondeu
+    resposta.tipo = COMANDO_ECHO; // Define o tipo como ECHO para o transmissor reconhecer a resposta
+    resposta.indice_destino = ID_TRANSMISSOR; // Responde diretamente para o transmissor
+    resposta.payload.echo.rssi = (uint8_t) info_pacote->rx_ctrl->rssi; // Inclui o RSSI da mensagem recebida como parte do payload
+    esp_now_send(broadcastAddress,(u_int8_t*) &resposta, sizeof(resposta)); // Envia 
     break;
   }
   }
@@ -220,9 +208,19 @@ void setup()
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
+  esp_wifi_set_max_tx_power(84);
   if (esp_now_init() != ESP_OK)
     return;
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv)); // Registra a função de callback para receber dados via ESP-NOW
+
+  // adiciona o peer de broadcast para garantir que pode enviar respostas para o transmissor
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
+    Serial.println("Falha ao adicionar o peer de broadcast");
+  }
 
   // Incicializa os timers
   millis_ttl = millis();
@@ -253,8 +251,8 @@ void loop()
 
   if (millis_atual - millis_ttl > TTL_TIME)
   {
-    // motor0.velocidadeAlvo = 0;
-    // motor1.velocidadeAlvo = 0;
+    target_ticks_0 = 0;
+    target_ticks_1 = 0;
     millis_ttl = millis_atual;
   }
 }
