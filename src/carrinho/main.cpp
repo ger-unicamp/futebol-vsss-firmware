@@ -2,6 +2,7 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_mac.h>
 
 #include "Mensagens.h"
 #include "Motor.h"
@@ -10,22 +11,22 @@
 #include "PID.h"
 
 // Comente esta linha ou mude para 0 para desativar o modo Debug
-#define DEBUG_ENABLE 1 
+#define DEBUG_ENABLE 1
 
 #if DEBUG_ENABLE
-  #define DEBUG_PRINT(x)     Serial.print(x)
-  #define DEBUG_PRINTLN(x)   Serial.println(x)
-  #define DEBUG_BEGIN(x)     Serial.begin(x)
+#define DEBUG_PRINT(x) Serial.print(x)
+#define DEBUG_PRINTLN(x) Serial.println(x)
+#define DEBUG_BEGIN(x) Serial.begin(x)
 #else
-  #define DEBUG_PRINT(x)
-  #define DEBUG_PRINTLN(x)
-  #define DEBUG_BEGIN(x)
+#define DEBUG_PRINT(x)
+#define DEBUG_PRINTLN(x)
+#define DEBUG_BEGIN(x)
 #endif
 
 #define DEBUG
 #define CANAL 11
 
-#define PH_IN1 2
+#define PH_IN1 1
 #define PH_IN2 2
 #define PH_IN3 4
 #define PH_IN4 3
@@ -64,13 +65,14 @@ PidConfig pidMotor0;
 PidConfig pidMotor1;
 
 // Variáveis alvo (Ticks por ciclo de controle de 16ms)
-float target_ticks_0 = 0; 
+float target_ticks_0 = 0;
 float target_ticks_1 = 0;
 
 void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
   // Verificação básica de tamanho
-  if (tamanho != sizeof(Mensagem)) return;
+  if (tamanho != sizeof(Mensagem))
+    return;
   u_int8_t *mac = info_pacote->src_addr;
   Mensagem pacote;
   memcpy(&pacote, dados, sizeof(pacote));
@@ -97,7 +99,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
         resposta.tipo = COMANDO_PAREAMENTO;
         resposta.indice_destino = ID_TRANSMISSOR;
         resposta.indice_remetente = memoria.indice;
-        WiFi.macAddress(resposta.payload.pareamento.mac); // Coleta o próprio MAC
+        esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.pareamento.mac); // Coleta o próprio MAC
         Serial.printf("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                       resposta.payload.pareamento.mac[0], resposta.payload.pareamento.mac[1],
                       resposta.payload.pareamento.mac[2], resposta.payload.pareamento.mac[3],
@@ -134,12 +136,12 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   switch (pacote.tipo)
   {
   case COMANDO_MOVIMENTO:
-    {
+  {
     target_ticks_0 = pacote.payload.movimento.vel_esq;
     target_ticks_1 = pacote.payload.movimento.vel_dir;
     millis_ttl = millis();
     break;
-    }
+  }
   case COMANDO_MOVIMENTO_GLOBAL:
     if (memoria.indice < MAX_ROBOS)
     {
@@ -150,28 +152,30 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     break;
   case COMANDO_ECHO:
   {
-    if(pacote.indice_destino != ID_BROADCAST && pacote.indice_destino != memoria.indice)
+    if (pacote.indice_destino != ID_BROADCAST && pacote.indice_destino != memoria.indice)
       return; // Se o comando de echo não for para broadcast nem para mim, ignora
 
     // Prepara uma mensagem de texto simples avisando que está vivo
     Mensagem resposta;
     // snprintf(resposta, sizeof(resposta), "ECHO_OK - Carrinho ID: %d\n", memoria.indice);
-    resposta.indice_remetente = memoria.indice; // Pode ser útil para o transmissor identificar quem respondeu
-    resposta.tipo = COMANDO_ECHO; // Define o tipo como ECHO para o transmissor reconhecer a resposta
-    resposta.indice_destino = ID_TRANSMISSOR; // Responde diretamente para o transmissor
-    resposta.payload.echo.rssi = (uint8_t) info_pacote->rx_ctrl->rssi; // Inclui o RSSI da mensagem recebida como parte do payload
-    esp_now_send(broadcastAddress,(u_int8_t*) &resposta, sizeof(resposta)); // Envia 
+    resposta.indice_remetente = memoria.indice;                              // Pode ser útil para o transmissor identificar quem respondeu
+    resposta.tipo = COMANDO_ECHO;                                            // Define o tipo como ECHO para o transmissor reconhecer a resposta
+    resposta.indice_destino = ID_TRANSMISSOR;                                // Responde diretamente para o transmissor
+    resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;        // Inclui o RSSI da mensagem recebida como parte do payload
+    esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.echo.mac);                // Coleta o próprio MAC para enviar de volta
+    esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta)); // Envia
     break;
   }
   case COMANDO_SET_ID:
   {
     // Pega o próprio MAC físico para comparar
     uint8_t meu_mac[6];
-    WiFi.macAddress(meu_mac);
-
+    esp_wifi_get_mac(WIFI_IF_STA, meu_mac);
     bool mac_eh_meu = true;
-    for (int i = 0; i < 6; i++) {
-      if (pacote.payload.set_id.mac_alvo[i] != meu_mac[i]) {
+    for (int i = 0; i < 6; i++)
+    {
+      if (pacote.payload.set_id.mac_alvo[i] != meu_mac[i])
+      {
         mac_eh_meu = false;
         break;
       }
@@ -181,18 +185,19 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     if (mac_eh_meu)
     {
       memoria.indice = pacote.payload.set_id.novo_id; // Atualiza o ID
-      
-      if (salvar_config(&memoria)) {
+
+      if (salvar_config(&memoria))
+      {
         Serial.printf("Novo ID recebido do Python e salvo: %d\n", memoria.indice);
-        
+
         // Dispara um ECHO de volta para o Python confirmar que a mudança funcionou
         Mensagem resposta;
         resposta.tipo = COMANDO_ECHO;
         resposta.indice_destino = ID_TRANSMISSOR;
         resposta.indice_remetente = memoria.indice;
-        resposta.payload.echo.rssi = (uint8_t) info_pacote->rx_ctrl->rssi;
+        resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;
         memcpy(resposta.payload.echo.mac, meu_mac, 6);
-        
+
         esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta));
       }
     }
@@ -223,7 +228,7 @@ void setup()
     uint8_t mac_novo[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     memcpy(memoria.mac_esp_principal, mac_novo, 6);
     memoria.indice = 255;
-    memoria.pid0 = {2.5f, 0.8f, 0.01f, 5.0f}; 
+    memoria.pid0 = {2.5f, 0.8f, 0.01f, 5.0f};
     memoria.pid1 = {2.5f, 0.8f, 0.01f, 5.0f};
     if (salvar_config(&memoria))
     {
@@ -244,8 +249,8 @@ void setup()
   // Configura os motores
   motor0 = criarMotor(PH_IN1, PH_IN2);
   motor1 = criarMotor(PH_IN3, PH_IN4);
-  tocarSomMotor(&motor0, 8000, 500);
-  tocarSomMotor(&motor1, 8000, 500);
+  // tocarSomMotor(&motor0, 8000, 500);
+  // tocarSomMotor(&motor1, 8000, 500);
 
   // Configura os encoders e as interrupções
   inicializarEncoder(&encoder0, ENC0_PINA, ENC0_PINB);
@@ -266,7 +271,8 @@ void setup()
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
   ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
-  esp_wifi_set_max_tx_power(84);
+  // esp_wifi_set_max_tx_power(84);
+  esp_wifi_set_max_tx_power(52);
   if (esp_now_init() != ESP_OK)
     return;
 
@@ -301,8 +307,8 @@ void loop()
     float pwm_saida_1 = pid_computar(&pidMotor1, target_ticks_1, encoder1.delta_ticks);
 
     // 3. Aplica nos motores (assumindo que a sua struct Motor ou biblioteca espera valor com sinal)
-    moverMotor(&motor0, (int) pwm_saida_0);
-    moverMotor(&motor1, (int) pwm_saida_1);
+    // moverMotor(&motor0, (int)pwm_saida_0);
+    // moverMotor(&motor1, (int)pwm_saida_1);
 
     millis_att = millis_atual;
   }

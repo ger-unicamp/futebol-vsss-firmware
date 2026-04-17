@@ -169,7 +169,7 @@ class PonteESP32:
         """Envia o comando de pareamento usando a senha definida no Mensagens.h."""
         msg = self.criar_mensagem()
         msg.tipo = self.enums['COMANDO_PAREAMENTO']
-        msg.indice = 0 # Indiferente para broadcast de pareamento
+        msg.indice_destino = 255 # Indiferente para broadcast de pareamento
         
         # Pega a senha do header (ou usa o padrão se não encontrar) e injeta na struct
         senha = self.defines.get('SENHA_PAREAMENTO', 'GERVSSS')
@@ -278,7 +278,8 @@ class PonteESP32:
                 mac_bytes = msg.payload.echo.mac
                 mac_str = ":".join([f"{b:02X}" for b in mac_bytes])
                 id_recebido = msg.indice_remetente
-                
+                rssi = msg.payload.echo.rssi - 256
+
                 # 3. Salva no "DHCP"
                 self.robos_ativos[mac_str] = {
                     "mac_bytes": list(mac_bytes),
@@ -286,7 +287,7 @@ class PonteESP32:
                 }
                 
                 # 4. Imprime o log com o novo medidor de Ping!
-                print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {msg.payload.echo.rssi:3d} dBm | Ping: {ping_ms:.1f} ms")
+                print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {rssi} dBm | Ping: {ping_ms:.1f} ms")
                 return
 
             # 2. Trata comandos de Movimento (se houver alguma confirmação)
@@ -335,7 +336,8 @@ if __name__ == "__main__":
 
         # Mantém vivo para escutar as respostas
         while True:
-            time.sleep(1)
+            esp.enviar_echo()
+            time.sleep(0.016666)
 
     except KeyboardInterrupt:
         print("\nFechando conexão...")
