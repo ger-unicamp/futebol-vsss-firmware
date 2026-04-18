@@ -10,17 +10,15 @@ void esp_print(const char *formato, ...);
 
 enum TipoComando : uint8_t
 {
-  COMANDO_MOVIMENTO = 0x01,
-  COMANDO_MOVIMENTO_GLOBAL = 0x02,
-  COMANDO_ECHO = 0x03,
-  COMANDO_SET_ID = 0x04,
-  COMANDO_PID_AUTOTUNE = 0x05,
-  COMANDO_SET_PID = 0x06,
-  COMANDO_GET_PID = 0x07,
-  COMANDO_PRINT = 0x08,
-  COMANDO_SALVAR = 0x09,
-  COMANDO_SET_CONFIG_SISTEMA = 0x0A,
-  COMANDO_PAREAMENTO = 0x99
+  COMANDO_PAREAMENTO = 0x01,
+  COMANDO_ID = 0x02,
+  COMANDO_MOVIMENTO = 0x03,
+  COMANDO_MOVIMENTO_GLOBAL = 0x04,
+  COMANDO_PID = 0x05,
+  COMANDO_AUTOTUNE_PID = 0x06,
+  COMANDO_PRINT = 0x07,
+  COMANDO_SALVAR = 0x08,
+  COMANDO_CONFIG_SISTEMA = 0x09,
 };
 
 typedef struct __attribute__((packed)) Mensagem
@@ -28,6 +26,7 @@ typedef struct __attribute__((packed)) Mensagem
   uint8_t tipo;             // O código do TipoComando (1 byte)
   uint8_t indice_destino;   // Indice do carrinho (1 byte)
   uint8_t indice_remetente; // Indice do carrinho remetente, útil para respostas e comandos globais (1 byte)
+  bool is_set;
 
   union Payload
   {
@@ -64,7 +63,10 @@ typedef struct __attribute__((packed)) Mensagem
     struct __attribute__((packed))
     {
       uint8_t roda; // 0 para Esquerda, 1 para Direita
-      float pwm_teste;
+      float pwm_teste_max;
+      float pwm_teste_min;
+      int ciclos;
+      int targert_ticks;
     } autotune;
 
     struct __attribute__((packed))

@@ -32,23 +32,25 @@ uint8_t tamanho_payload = 0;
 uint8_t buffer_payload[250]; // 250 é o limite seguro do ESP-NOW
 uint8_t indice_buffer = 0;
 
-uint8_t mac_robos[MAX_ROBOS + 1][6]; // Guarda os MACs (Índices 1 a 6)
+uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a 6)
 bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
 
 void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
-  if (tamanho != sizeof(Mensagem)) return;
+  if (tamanho != sizeof(Mensagem))
+    return;
 
   Mensagem pacote;
   memcpy(&pacote, dados, sizeof(Mensagem));
 
   // Ignora se não for para o transmissor
-  if (pacote.indice_destino != ID_TRANSMISSOR) return;
+  if (pacote.indice_destino != ID_TRANSMISSOR)
+    return;
 
   uint8_t id = pacote.indice_remetente;
 
   // Se o carrinho enviou Pareamento ou Echo, atualizamos a lista de confiáveis na RAM!
-  if (pacote.tipo == COMANDO_PAREAMENTO || pacote.tipo == COMANDO_ECHO)
+  if (pacote.tipo == COMANDO_PAREAMENTO || pacote.tipo == COMANDO_PID)
   {
     if (id > 0 && id <= MAX_ROBOS)
     {
@@ -59,10 +61,13 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   else
   {
     // Se for outro comando (ex: resposta de telemetria), valida a segurança
-    if (id == 0 || id > MAX_ROBOS || !robo_online[id]) return;
-    
-    for (int i = 0; i < 6; i++) {
-      if (info_pacote->src_addr[i] != mac_robos[id][i]) return; // Desconhecido fingindo ser o robô!
+    if (id == 0 || id > MAX_ROBOS || !robo_online[id])
+      return;
+
+    for (int i = 0; i < 6; i++)
+    {
+      if (info_pacote->src_addr[i] != mac_robos[id][i])
+        return; // Desconhecido fingindo ser o robô!
     }
   }
 
@@ -92,7 +97,7 @@ void setup()
   if (esp_now_init() != ESP_OK)
     return;
 
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));// Registra a função de callback para receber dados via ESP-NOW
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv)); // Registra a função de callback para receber dados via ESP-NOW
 
   // configura o peer de broadcast
   memset(&peerInfo, 0, sizeof(peerInfo));
