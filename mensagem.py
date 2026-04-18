@@ -4,6 +4,7 @@ import threading
 import time
 import re
 from cffi import FFI
+import serial.tools.list_ports
 
 class PonteESP32:
     def __init__(self, porta, baudrate, header_path):
@@ -220,6 +221,42 @@ class PonteESP32:
         print(f"[--> SEND] Mandando MAC {':'.join([f'{b:02X}' for b in mac_alvo_bytes])} assumir ID {novo_id}")
         self.enviar_mensagem(msg)
 
+    def enviar_set_pid(self, robo_id, roda, kp, ki, kd, kf=0.0):
+        msg = self.ffi.new("Mensagem *")
+        msg.tipo = self.enums.get('COMANDO_SET_PID', 0x06)
+        msg.indice_destino = robo_id
+        msg.payload.pidconfig.roda = roda
+        msg.payload.pidconfig.kp = kp
+        msg.payload.pidconfig.ki = ki
+        msg.payload.pidconfig.kd = kd
+        msg.payload.pidconfig.kf = kf
+        self.enviar_mensagem(msg)
+
+    def enviar_get_pid(self, robo_id, roda):
+        msg = self.ffi.new("Mensagem *")
+        msg.tipo = self.enums.get('COMANDO_GET_PID', 0x07)
+        msg.indice_destino = robo_id
+        msg.payload.pidconfig.roda = roda
+        self.enviar_mensagem(msg)
+
+    def enviar_autotune(self, robo_id, roda, pwm_teste):
+        msg = self.ffi.new("Mensagem *")
+        msg.tipo = self.enums.get('COMANDO_PID_AUTOTUNE', 0x05)
+        msg.indice_destino = robo_id
+        msg.payload.autotune.roda = roda
+        msg.payload.autotune.pwm_teste = pwm_teste
+        self.enviar_mensagem(msg)
+
+    def enviar_salvar(self, robo_id):
+        """Envia o comando para o robô salvar seus parâmetros atuais na memória flash."""
+        msg = self.criar_mensagem()
+        # Usa o valor 0x09 como fallback caso o parser não encontre
+        msg.tipo = self.enums.get('COMANDO_SALVAR', 0x09) 
+        msg.indice_destino = robo_id
+        
+        print(f"\n[--> SEND] Mandando Robô {robo_id} salvar configurações na Flash...")
+        self.enviar_mensagem(msg)
+
     def _maquina_estados_rx(self):
         """Máquina de estados idêntica a do main.cpp, focada na recepção (RX)."""
         ESTADO_WAIT_SYNC1 = 0
@@ -296,6 +333,19 @@ class PonteESP32:
                 print(f"    Velocidade Esq: {msg.payload.movimento.vel_esq}")
                 print(f"    Velocidade Dir: {msg.payload.movimento.vel_dir}")
 
+
+            elif msg.tipo == self.enums.get('COMANDO_GET_PID', 0x07):
+                cfg = msg.payload.pidconfig
+                print(f"\n[<-- RECV PID] Robô {msg.indice_remetente} | Roda {cfg.roda} | Kp: {cfg.kp:.3f}, Ki: {cfg.ki:.3f}, Kd: {cfg.kd:.3f}, Kf: {cfg.kf:.3f}")
+
+            elif msg.tipo == self.enums.get('COMANDO_PRINT', 0x08):
+                # Converte os bytes de volta para string, parando no primeiro caractere nulo (\0)
+                texto_raw = bytes(msg.payload.print.texto)
+                texto = texto_raw.split(b'\0')[0].decode('utf-8', errors='replace')
+                
+                print(f"\n[ROBÔ {msg.indice_remetente}]: {texto}")
+                print("vsss> ", end="", flush=True) # Devolve o prompt do terminal
+
             
                 
         except Exception as e:
@@ -307,38 +357,95 @@ class PonteESP32:
         self.serial.close()
 
 
+def localizar_transmissor():
+    """Procura automaticamente pela porta serial do ESP32 Transmissor"""
+    portas = serial.tools.list_ports.comports()
+    
+    # Lista de padrões comuns de descrição/ID para ESP32
+    # CP210x, CH340 e o JTAG nativo do ESP32-S3/C3 (ACM)
+    # padroes = ["CP210", "CH340", "USB Serial", "S3", "ACM", "UART"]
+    padroes = ["ACM"]
+    
+    for p in portas:
+        for padrao in padroes:
+            if padrao.upper() in p.description.upper() or padrao.upper() in p.device.upper():
+                print(f"[*] Transmissor encontrado: {p.device} ({p.description})")
+                return p.device
+    return None
+
 # ==========================================
-# Exemplo de Uso
+# Terminal Interativo
 # ==========================================
 if __name__ == "__main__":
-    # Ajuste para a porta COM correta (ex: 'COM3' no Windows ou '/dev/ttyUSB0' no Linux)
-    PORTA_SERIAL = '/dev/ttyACM0' 
+    # --- AUTO DETECÇÃO DA PORTA ---
+    PORTA_SERIAL = localizar_transmissor()
+    
+    if not PORTA_SERIAL:
+        print("❌ Erro: Nenhum ESP32 encontrado. Verifique o cabo USB!")
+        exit(1)
+    # ------------------------------
+    print(f"[*] Conectando ao Transmissor na porta {PORTA_SERIAL}...")
     BAUD_RATE = 115200
     CAMINHO_HEADER = './lib/Mensagens/Mensagens.h'
 
-    # Inicia a ponte
     esp = PonteESP32(PORTA_SERIAL, BAUD_RATE, CAMINHO_HEADER)
-    time.sleep(2) # Tempo para o ESP32 resetar ao abrir a Serial
+    time.sleep(2)
 
-    try:    
-        # 1. Testa Pareamento
-        esp.enviar_pareamento()
-        time.sleep(1)
+    print("\n" + "="*40)
+    print("🚗 TERMINAL VSSS INICIADO")
+    print("Comandos disponíveis:")
+    print(" - echo")
+    print(" - parear")
+    print(" - get_pid <robo_id> <roda_0_ou_1>")
+    print(" - set_pid <robo_id> <roda> <kp> <ki> <kd>")
+    print(" - autotune <robo_id> <roda> <pwm_teste>")
+    print(" - salvar <robo_id>") # Nova linha
+    print(" - sair")
+    print("="*40 + "\n")
 
-        # 2. Testa Echo
-        esp.enviar_echo()
-        time.sleep(1.5)
-
-        esp.organizar_ids()
-
-        # 3. Testa Movimento
-        esp.enviar_movimento(indice=1, vel_esq=255, vel_dir=-255)
-
-        # Mantém vivo para escutar as respostas
+    try:
         while True:
-            esp.enviar_echo()
-            time.sleep(0.016666)
+            comando_raw = input("vsss> ").strip().split()
+            if not comando_raw:
+                continue
+
+            cmd = comando_raw[0].lower()
+
+            if cmd == "sair":
+                break
+            elif cmd == "echo":
+                esp.enviar_echo()
+            elif cmd == "parear":
+                esp.enviar_pareamento()
+            elif cmd == "get_pid":
+                if len(comando_raw) >= 3:
+                    esp.enviar_get_pid(int(comando_raw[1]), int(comando_raw[2]))
+                else:
+                    print("Uso: get_pid <robo_id> <roda>")
+            elif cmd == "set_pid":
+                if len(comando_raw) >= 6:
+                    robo, roda, p, i, d = map(float, comando_raw[1:6])
+                    esp.enviar_set_pid(int(robo), int(roda), p, i, d)
+                    print(f"[*] PID enviado para o Robô {int(robo)}.")
+                else:
+                    print("Uso: set_pid <robo_id> <roda> <kp> <ki> <kd>")
+            elif cmd == "autotune":
+                if len(comando_raw) >= 4:
+                    robo, roda, pwm = map(float, comando_raw[1:4])
+                    esp.enviar_autotune(int(robo), int(roda), pwm)
+                    print(f"[*] Iniciando Autotune na roda {int(roda)} com PWM {pwm}.")
+                else:
+                    print("Uso: autotune <robo_id> <roda> <pwm_teste>")
+            elif cmd == "salvar":
+                if len(comando_raw) >= 2:
+                    robo_id = int(comando_raw[1])
+                    esp.enviar_salvar(robo_id)
+                else:
+                    print("Uso: salvar <robo_id>")
+            else:
+                print(f"Comando desconhecido: {cmd}")
 
     except KeyboardInterrupt:
-        print("\nFechando conexão...")
+        print("\nSaindo...")
+    finally:
         esp.fechar()

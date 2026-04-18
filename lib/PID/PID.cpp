@@ -82,8 +82,8 @@ void autotune_iniciar(PidAutotune *tune, float pwm_teste_max, float pwm_teste_mi
     tune->saida_rele_min = pwm_teste_min;
 }
 
-bool autotune_computar(PidAutotune *tune, PidConfig *pid, float setpoint_ticks, float valor_medido_ticks, float *saida_pwm) {
-    if (!tune->ativo) return true;
+float autotune_computar(PidAutotune *tune, PidConfig *pid, float setpoint_ticks, float valor_medido_ticks) {
+    if (!tune->ativo) return 0.0f;
 
     unsigned long agora_us = micros();
 
@@ -128,6 +128,5 @@ bool autotune_computar(PidAutotune *tune, PidConfig *pid, float setpoint_ticks, 
         tune->pico_min = setpoint_ticks;
     }
 
-    *saida_pwm = tune->estado_rele ? tune->saida_rele_max : tune->saida_rele_min;
-    return false; 
+    return tune->estado_rele ? tune->saida_rele_max : tune->saida_rele_min;
 }

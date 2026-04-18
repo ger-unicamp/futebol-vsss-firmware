@@ -2,8 +2,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-
-typedef struct {
+typedef struct
+{
     float kp;
     float ki;
     float kd;
@@ -11,11 +11,16 @@ typedef struct {
 } PIDParams;
 
 // Defina aqui a sua struct com as variáveis que deseja salvar
-typedef struct {
+typedef struct
+{
     uint8_t indice;
     uint8_t mac_esp_principal[6];
     PIDParams pid0;
     PIDParams pid1;
+
+    int passo_maximo_pwm;
+    int intervalo_rampa_ms;
+    uint32_t tempo_ttl_ms;
 } DadosConfig;
 
 // Inicializa a memória flash (deve ser chamada no setup/app_main)

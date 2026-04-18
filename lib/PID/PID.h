@@ -40,4 +40,4 @@ float pid_computar(PidConfig *pid, float setpoint_ticks, float valor_medido_tick
 
 // O autotune de motor precisa ser rápido. saídas max/min devem ser valores de PWM que o motor consiga girar bem
 void autotune_iniciar(PidAutotune *tune, float pwm_teste_max, float pwm_teste_min, int ciclos);
-bool autotune_computar(PidAutotune *tune, PidConfig *pid, float setpoint_ticks, float valor_medido_ticks, float *saida_pwm);
+float autotune_computar(PidAutotune *tune, PidConfig *pid, float setpoint_ticks, float valor_medido_ticks);

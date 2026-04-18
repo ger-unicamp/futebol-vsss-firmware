@@ -6,14 +6,21 @@
 #define ID_TRANSMISSOR 0
 #define ID_BROADCAST 255
 
+void esp_print(const char *formato, ...);
+
 enum TipoComando : uint8_t
 {
   COMANDO_MOVIMENTO = 0x01,
   COMANDO_MOVIMENTO_GLOBAL = 0x02,
   COMANDO_ECHO = 0x03,
   COMANDO_SET_ID = 0x04,
+  COMANDO_PID_AUTOTUNE = 0x05,
+  COMANDO_SET_PID = 0x06,
+  COMANDO_GET_PID = 0x07,
+  COMANDO_PRINT = 0x08,
+  COMANDO_SALVAR = 0x09,
+  COMANDO_SET_CONFIG_SISTEMA = 0x0A,
   COMANDO_PAREAMENTO = 0x99
-  // Pode adicionar CMD_TUNING_PID, etc.
 };
 
 typedef struct __attribute__((packed)) Mensagem
@@ -53,6 +60,33 @@ typedef struct __attribute__((packed)) Mensagem
       uint8_t mac_alvo[6]; // O MAC físico do carrinho que precisa mudar de ID
       uint8_t novo_id;     // O novo ID válido (1 a 6) que ele deve assumir
     } set_id;
+
+    struct __attribute__((packed))
+    {
+      uint8_t roda; // 0 para Esquerda, 1 para Direita
+      float pwm_teste;
+    } autotune;
+
+    struct __attribute__((packed))
+    {
+      uint8_t roda;
+      float kp;
+      float ki;
+      float kd;
+      float kf;
+    } pidconfig;
+
+    struct __attribute__((packed))
+    {
+      char texto[64];
+    } print;
+
+    struct __attribute__((packed))
+    {
+      int passo_maximo_pwm;
+      int intervalo_rampa_ms;
+      uint32_t tempo_ttl_ms;
+    } config_sistema;
 
   } payload;
 } Mensagem;

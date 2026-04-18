@@ -64,12 +64,12 @@ void moverMotor(Motor *motor, int pwmDesejado)
 
   if (velocidadeAplicada >= 0)
   {
-    digitalWrite(motor->pinoDir, HIGH);
+    digitalWrite(motor->pinoDir, LOW);
   }
   else
   {
-    digitalWrite(motor->pinoDir, LOW);
-    velocidadeAplicada = -velocidadeAplicada;
+    digitalWrite(motor->pinoDir, HIGH);
+    velocidadeAplicada = velocidadeAplicada + PID_MAX_PWM;
   }
 
   ledcWrite(motor->pinoPWM, velocidadeAplicada);

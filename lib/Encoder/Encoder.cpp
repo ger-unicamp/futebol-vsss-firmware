@@ -15,10 +15,22 @@ void inicializarEncoder(Encoder *enc, uint8_t pA, uint8_t pB)
 
 // A lógica de leitura usando 1 pino de interrupção e 1 de direção.
 // Presumindo que a interrupção seja RISING no canal A.
+// void IRAM_ATTR logicaEncoder(Encoder *enc)
+// {
+//   // Lê o canal B para determinar a direção
+//   if (digitalRead(enc->pinB) == HIGH)
+//     enc->ticks = enc->ticks + 1;
+//   else
+//     enc->ticks = enc->ticks - 1;
+// }
 void IRAM_ATTR logicaEncoder(Encoder *enc)
 {
-  // Lê o canal B para determinar a direção
-  if (digitalRead(enc->pinB) == HIGH)
+  // Lê o estado dos dois pinos
+  bool estadoA = digitalRead(enc->pinA);
+  bool estadoB = digitalRead(enc->pinB);
+
+  // Na leitura 2X, comparamos se os estados são iguais ou diferentes
+  if (estadoA == estadoB)
     enc->ticks = enc->ticks + 1;
   else
     enc->ticks = enc->ticks - 1;

@@ -6,9 +6,9 @@ typedef struct encoder
 {
   uint8_t pinA;        // Pino de interrupção (Pulso)
   uint8_t pinB;        // Pino de direção
-  volatile long ticks; // Contador global de pulsos (Volatile pois muda na ISR)
-  long lastTicks;      // Memória do último ciclo
-  long delta_ticks;    // Variação de pulsos (Variável de Processo para o PID)
+  volatile int32_t ticks; // Contador global de pulsos (Volatile pois muda na ISR)
+  int32_t lastTicks;      // Memória do último ciclo
+  int32_t delta_ticks;    // Variação de pulsos (Variável de Processo para o PID)
 } Encoder;
 
 // Inicializa os pinos e zera os valores da struct
