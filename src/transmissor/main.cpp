@@ -2,6 +2,8 @@
 #include <esp_now.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 #include "Mensagens.h"
 
@@ -22,20 +24,27 @@ typedef enum
   STATE_WAIT_SYNC2,
   STATE_WAIT_LENGTH,
   STATE_READ_PAYLOAD
-} EstadoSerial;
+} estado_serial_t;
+
+// Fila para mensagens que chegam do rádio e devem ir para o PC
+static QueueHandle_t fila_rx_pc;
+
+estado_serial_t estado_serial = STATE_WAIT_SYNC1;
+uint32_t ultimo_byte_serial_ms = 0;
+const uint32_t SERIAL_TIMEOUT_MS = 50; // Reseta se o pacote demorar > 50ms
+
+volatile uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a 6)
+volatile bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-esp_now_peer_info_t peerInfo;
-mensagem_t msg;
-EstadoSerial estado_serial = STATE_WAIT_SYNC1;
+uint8_t buffer_payload[250];
 uint8_t tamanho_payload = 0;
-uint8_t buffer_payload[250]; // 250 é o limite seguro do ESP-NOW
 uint8_t indice_buffer = 0;
 
-uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a 6)
-bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
+uint32_t ultimo_byte_rx_tempo = 0;
+const uint32_t TIMEOUT_SERIAL_MS = 50; // 50ms é uma eternidade para USB, tempo mais do que suficiente
 
-void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
+void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
   if (tamanho != sizeof(mensagem_t))
     return;
@@ -48,27 +57,37 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     return;
 
   uint8_t id = pacote.indice_remetente;
-
   // Se o carrinho enviou Pareamento ou Echo, atualizamos a lista de confiáveis na RAM!
-  if (pacote.tipo == COMANDO_PAREAMENTO || pacote.tipo == COMANDO_ID)
+  if (pacote.tipo == COMANDO_PAREAMENTO)
   {
-    if (id > 0 && id <= MAX_ROBOS)
+    // Verifica se a senha confere (Ajuste "SENHA_REDE" para o nome que usa no Mensagens.h)
+    if (pacote.payload.pareamento.senha == SENHA_PAREAMENTO)
     {
-      memcpy(mac_robos[id], info_pacote->src_addr, 6);
-      robo_online[id] = true;
+      if (id > 0 && id <= MAX_ROBOS)
+      {
+        // Substitui o memcpy por um loop para resolver o erro do 'volatile' de forma segura
+        for (int i = 0; i < 6; i++)
+        {
+          mac_robos[id][i] = info_pacote->src_addr[i];
+        }
+        robo_online[id] = true;
+      }
+    }
+    else
+    {
+      return; // Senha errada, ignora o intruso sumariamente!
     }
   }
-  else
-  {
-    // Se for outro comando (ex: resposta de telemetria), valida a segurança
-    if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
-      return;
 
-    for (int i = 0; i < 6; i++)
-    {
-      if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255) // Se o MAC não bater com o que temos registrado para aquele ID (e não for broadcast), ignora
-        return;                                                      // Desconhecido fingindo ser o robô!
-    }
+  // Se for outro comando (ex: telemetria, echo), tem de estar na lista de confiáveis!
+  if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
+    return;
+
+  // Valida se o MAC que está a enviar o comando bate com o MAC registado no pareamento
+  for (int i = 0; i < 6; i++)
+  {
+    if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255)
+      return; // Desconhecido a fingir ser o robô!
   }
 
   if (pacote.tipo == COMANDO_TELEMETRIA)
@@ -76,16 +95,10 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     // RSSI e SNR medidos pelo receptor (Transmissor) agora
     pacote.payload.telemetria.rssi_transmissor = info_pacote->rx_ctrl->rssi;
     pacote.payload.telemetria.noise_floor_transmissor = info_pacote->rx_ctrl->noise_floor;
-
-    // Atualizamos o buffer de dados com os novos valores injetados
-    memcpy((void *)dados, &pacote, sizeof(mensagem_t));
   }
 
   // Se passou por tudo, repassa a struct via Serial para o Python ler o MAC
-  Serial.write(SYNC_1_RX);
-  Serial.write(SYNC_2_RX);
-  Serial.write(tamanho);
-  Serial.write(dados, tamanho);
+  xQueueSend(fila_rx_pc, &pacote, 0);
 }
 
 void setup()
@@ -107,12 +120,20 @@ void setup()
   if (esp_now_init() != ESP_OK)
     return;
 
-  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv)); // Registra a função de callback para receber dados via ESP-NOW
+  fila_rx_pc = xQueueCreate(15, sizeof(mensagem_t));
+
+  if (fila_rx_pc == NULL)
+  {
+    Serial.println("Erro ao criar a fila RX!");
+  }
+
+  esp_now_register_recv_cb(esp_now_recv_cb_t(on_data_recv)); // Registra a função de callback para receber dados via ESP-NOW
 
   // configura o peer de broadcast
-  memset(&peerInfo, 0, sizeof(peerInfo));
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  esp_now_peer_info_t peer_info;
+  memset(&peer_info, 0, sizeof(peer_info));
+  memcpy(peer_info.peer_addr, broadcastAddress, 6);
+  if (esp_now_add_peer(&peer_info) != ESP_OK)
   {
     Serial.println("Falha ao adicionar o peer de broadcast");
   }
@@ -126,11 +147,32 @@ void setup()
 
 void loop()
 {
+  mensagem_t msg_para_pc;
+  if (xQueueReceive(fila_rx_pc, &msg_para_pc, 0) == pdTRUE)
+  {
+    // Agora sim, em segurança fora da interrupção, enviamos para o Serial
+    Serial.write(SYNC_1_RX);
+    Serial.write(SYNC_2_RX);
+    Serial.write(sizeof(mensagem_t));
+    Serial.write((uint8_t *)&msg_para_pc, sizeof(mensagem_t));
+  }
+
+  if (estado_serial != STATE_WAIT_SYNC1)
+  {
+    if (millis() - ultimo_byte_rx_tempo > TIMEOUT_SERIAL_MS)
+    {
+      // Passou demasiado tempo! Reseta tudo para evitar desync.
+      estado_serial = STATE_WAIT_SYNC1;
+      indice_buffer = 0;
+      tamanho_payload = 0;
+    }
+  }
+
   // Lê a porta Serial montando a mensagem guiada pelo cabeçalho
   while (Serial.available() > 0)
   {
     uint8_t byte_lido = Serial.read();
-
+    ultimo_byte_rx_tempo = millis();
     switch (estado_serial)
     {
     case STATE_WAIT_SYNC1:
