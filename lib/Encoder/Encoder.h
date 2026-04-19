@@ -18,7 +18,7 @@ void inicializar_encoder(encoder_t *enc, uint8_t pA, uint8_t pB);
 void IRAM_ATTR logica_encoder(encoder_t *enc);
 
 // Função para calcular a variação de ticks no loop de controle
-void atulaizar_delta_ticks(encoder_t *enc);
+void atualizar_delta_ticks(encoder_t *enc);
 
 // Macro mágica para gerar as funções ISR na main.cpp de forma genérica
 #define CRIAR_ISR_ENCODER(nome_funcao, instancia_encoder) \

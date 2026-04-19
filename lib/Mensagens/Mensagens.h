@@ -22,7 +22,7 @@ enum tipo_comando : uint8_t
   COMANDO_TELEMETRIA = 0x0A,
 };
 
-typedef struct __attribute__((packed)) Mensagem
+typedef struct __attribute__((packed)) mensagem_t
 {
   uint8_t tipo;             // O código do tipo_comando (1 byte)
   uint8_t indice_destino;   // Indice do carrinho (1 byte)
@@ -102,4 +102,4 @@ typedef struct __attribute__((packed)) Mensagem
     } telemetria;
 
   } payload;
-} Mensagem;
+} mensagem_t;

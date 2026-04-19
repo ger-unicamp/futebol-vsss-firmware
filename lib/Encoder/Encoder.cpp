@@ -37,7 +37,7 @@ void IRAM_ATTR logica_encoder(encoder_t *enc)
 }
 
 // Essa função deve ser chamada em uma frequência fixa (ex: a cada 10ms ou 20ms)
-void atulaizar_delta_ticks(encoder_t *enc)
+void atualizar_delta_ticks(encoder_t *enc)
 {
   // Pausa as interrupções rapidamente para copiar a variável volatile com segurança
   // (evita que a variável mude exatamente no meio da leitura de 32 bits)

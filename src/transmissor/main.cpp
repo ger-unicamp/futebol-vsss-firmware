@@ -26,7 +26,7 @@ typedef enum
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 esp_now_peer_info_t peerInfo;
-Mensagem msg;
+mensagem_t msg;
 EstadoSerial estado_serial = STATE_WAIT_SYNC1;
 uint8_t tamanho_payload = 0;
 uint8_t buffer_payload[250]; // 250 é o limite seguro do ESP-NOW
@@ -37,11 +37,11 @@ bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
 
 void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
-  if (tamanho != sizeof(Mensagem))
+  if (tamanho != sizeof(mensagem_t))
     return;
 
-  Mensagem pacote;
-  memcpy(&pacote, dados, sizeof(Mensagem));
+  mensagem_t pacote;
+  memcpy(&pacote, dados, sizeof(mensagem_t));
 
   // Ignora se não for para o transmissor
   if (pacote.indice_destino != ID_TRANSMISSOR)
@@ -78,7 +78,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     pacote.payload.telemetria.noise_floor_transmissor = info_pacote->rx_ctrl->noise_floor;
 
     // Atualizamos o buffer de dados com os novos valores injetados
-    memcpy((void *)dados, &pacote, sizeof(Mensagem));
+    memcpy((void *)dados, &pacote, sizeof(mensagem_t));
   }
 
   // Se passou por tudo, repassa a struct via Serial para o Python ler o MAC
@@ -120,7 +120,7 @@ void setup()
   pinMode(LED, OUTPUT);
   digitalWrite(LED, LOW);
 
-  Serial.println("Tamanho da mensagem: " + String(sizeof(Mensagem)) + " bytes");
+  Serial.println("Tamanho da mensagem: " + String(sizeof(mensagem_t)) + " bytes");
   Serial.println("Transmissor iniciado com sucesso!");
 }
 
