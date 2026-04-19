@@ -29,20 +29,21 @@ typedef enum
 // Fila para mensagens que chegam do rádio e devem ir para o PC
 static QueueHandle_t fila_rx_pc;
 
+// Variáveis da Máquina de Estados Serial
 estado_serial_t estado_serial = STATE_WAIT_SYNC1;
-uint32_t ultimo_byte_serial_ms = 0;
-const uint32_t SERIAL_TIMEOUT_MS = 50; // Reseta se o pacote demorar > 50ms
-
-volatile uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a 6)
-volatile bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
-
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t buffer_payload[250];
 uint8_t tamanho_payload = 0;
 uint8_t indice_buffer = 0;
 
+// Variáveis de Timeout Serial unificadas
 uint32_t ultimo_byte_rx_tempo = 0;
-const uint32_t TIMEOUT_SERIAL_MS = 50; // 50ms é uma eternidade para USB, tempo mais do que suficiente
+const uint32_t TIMEOUT_SERIAL_MS = 50;
+
+// Tabelas de Registo
+volatile uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a MAX_ROBOS)
+volatile bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
+
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
@@ -57,15 +58,14 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
     return;
 
   uint8_t id = pacote.indice_remetente;
-  // Se o carrinho enviou Pareamento ou Echo, atualizamos a lista de confiáveis na RAM!
+
+  // 1. Lógica de Pareamento
   if (pacote.tipo == COMANDO_PAREAMENTO)
   {
-    // Verifica se a senha confere (Ajuste "SENHA_REDE" para o nome que usa no Mensagens.h)
     if (pacote.payload.pareamento.senha == SENHA_PAREAMENTO)
     {
       if (id > 0 && id <= MAX_ROBOS)
       {
-        // Substitui o memcpy por um loop para resolver o erro do 'volatile' de forma segura
         for (int i = 0; i < 6; i++)
         {
           mac_robos[id][i] = info_pacote->src_addr[i];
@@ -78,16 +78,18 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
       return; // Senha errada, ignora o intruso sumariamente!
     }
   }
-
-  // Se for outro comando (ex: telemetria, echo), tem de estar na lista de confiáveis!
-  if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
-    return;
-
-  // Valida se o MAC que está a enviar o comando bate com o MAC registado no pareamento
-  for (int i = 0; i < 6; i++)
+  // 2. Lógica de Comandos Normais (Validação estrita)
+  else
   {
-    if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255)
-      return; // Desconhecido a fingir ser o robô!
+    if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
+      return;
+
+    // Valida se o MAC que está a enviar o comando bate com o MAC registado
+    for (int i = 0; i < 6; i++)
+    {
+      if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255)
+        return; // Desconhecido a fingir ser o robô!
+    }
   }
 
   if (pacote.tipo == COMANDO_TELEMETRIA)
@@ -161,7 +163,6 @@ void loop()
   {
     if (millis() - ultimo_byte_rx_tempo > TIMEOUT_SERIAL_MS)
     {
-      // Passou demasiado tempo! Reseta tudo para evitar desync.
       estado_serial = STATE_WAIT_SYNC1;
       indice_buffer = 0;
       tamanho_payload = 0;

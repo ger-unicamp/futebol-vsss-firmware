@@ -6,9 +6,7 @@
 #define ID_TRANSMISSOR 0
 #define ID_BROADCAST 255
 
-void esp_print(const char *formato, ...);
-
-enum tipo_comando : uint8_t
+enum tipo_comando
 {
   COMANDO_PAREAMENTO = 0x01,
   COMANDO_ID = 0x02,
