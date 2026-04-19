@@ -10,6 +10,7 @@
 #include "Encoder.h"
 #include "Memoria.h"
 #include "PID.h"
+#include "Despachante.h"
 
 // Comente esta linha ou mude para 0 para desativar o modo Debug
 #define DEBUG_ENABLE
@@ -36,7 +37,6 @@
 #define NUMERO_RODAS 2
 #define DIR 0 // indice roda direita
 #define ESQ 1 // indice roda esquerda
-#define BROADCAST_ADDRESS (uint8_t[]){0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 
 // Estrutura para guardar os parâmetros na memoria Flash
 dados_config memoria;
@@ -80,8 +80,6 @@ void espnow_printf(const char *formato, ...)
 {
   mensagem_t msg = {0};
   msg.tipo = COMANDO_PRINT;
-  msg.indice_destino = ID_TRANSMISSOR; // Envia para o PC
-  msg.indice_remetente = memoria.indice;
 
   // 1. Formata a string (como um printf) diretamente dentro do payload da mensagem
   va_list args;
@@ -95,9 +93,7 @@ void espnow_printf(const char *formato, ...)
 
   // 3. Envia via ESP-NOW apenas se o print de rede estiver ativado e o carrinho pareado
   if (esp_print_ativo && memoria.pareado)
-  {
-    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
-  }
+    despachante_enfileirar(msg);
 }
 
 float controle_pid(roda_t *roda, float setpoint, float medido)
@@ -117,23 +113,20 @@ float controle_autotune(roda_t *roda, float setpoint, float medido)
     // 1. Devolve o controle para o PID normal!
     roda->calcular_motor = controle_pid;
     periodo_ttl_ativo = true;
+    memoria.pid[roda->indice_roda].kp = roda->pid_motor.kp;
+    memoria.pid[roda->indice_roda].ki = roda->pid_motor.ki;
+    memoria.pid[roda->indice_roda].kd = roda->pid_motor.kd;
+    memoria.pid[roda->indice_roda].kf = roda->pid_motor.kf;
 
     // 2. Envia a mensagem de aviso para o Python
     mensagem_t msg = {0};
     msg.tipo = COMANDO_PID;
-    msg.indice_destino = ID_TRANSMISSOR;
-    msg.indice_remetente = memoria.indice;
     msg.payload.pid_config.roda = roda->indice_roda;
     msg.payload.pid_config.kp = roda->pid_motor.kp;
     msg.payload.pid_config.ki = roda->pid_motor.ki;
     msg.payload.pid_config.kd = roda->pid_motor.kd;
     msg.payload.pid_config.kf = roda->pid_motor.kf;
-
-    memoria.pid[roda->indice_roda].kp = roda->pid_motor.kp;
-    memoria.pid[roda->indice_roda].ki = roda->pid_motor.ki;
-    memoria.pid[roda->indice_roda].kd = roda->pid_motor.kd;
-    memoria.pid[roda->indice_roda].kf = roda->pid_motor.kf;
-    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+    despachante_enfileirar(msg);
   }
 
   return pwm;
@@ -178,13 +171,10 @@ void tratar_comando_id(const mensagem_t *pacote, const esp_now_recv_info_t *info
   }
 
   mensagem_t msg = {0};
-  espnow_printf("ECHO - ID: %d\n", memoria.indice);
-  msg.indice_remetente = memoria.indice;
   msg.tipo = COMANDO_ID;
-  msg.indice_destino = ID_TRANSMISSOR;
   msg.payload.echo.rssi = info_pacote->rx_ctrl->rssi;
   memcpy(msg.payload.echo.mac, meu_mac, 6);
-  esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+  despachante_enfileirar(msg);
 }
 
 void tratar_comando_pid(const mensagem_t *pacote)
@@ -211,8 +201,6 @@ void tratar_comando_pid(const mensagem_t *pacote)
 
   mensagem_t msg = {0};
   msg.tipo = COMANDO_PID;
-  msg.indice_destino = ID_TRANSMISSOR;
-  msg.indice_remetente = memoria.indice;
   for (int i = 0; i < NUMERO_RODAS; i++)
   {
     msg.payload.pid_config.roda = i;
@@ -220,7 +208,7 @@ void tratar_comando_pid(const mensagem_t *pacote)
     msg.payload.pid_config.ki = rodas[i].pid_motor.ki;
     msg.payload.pid_config.kd = rodas[i].pid_motor.kd;
     msg.payload.pid_config.kf = rodas[i].pid_motor.kf;
-    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+    despachante_enfileirar(msg);
   }
 }
 
@@ -298,7 +286,7 @@ bool pacote_eh_seguro(const mensagem_t *pacote, const uint8_t *mac_remetente)
 // Callback para receber mensagens via ESP-NOW
 void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
-  cnt_pacotes_totais++;
+  cnt_pacotes_totais = cnt_pacotes_totais + 1;
   // Verificação básica de tamanho
   if (tamanho != sizeof(mensagem_t))
     return; // tamanho inesperado, ignora o pacote
@@ -314,7 +302,7 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
     // Compara a senha recebida com a senha hardcoded
     if (strncmp(pacote.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(pacote.payload.pareamento.senha)) == 0)
     {
-      cnt_pacotes_validos++;
+      cnt_pacotes_validos = cnt_pacotes_validos + 1;
 
       // Senha correta! Copia o MAC do remetente para a struct da memória (apenas na RAM)
       memcpy(memoria.mac_esp_principal, info_pacote->src_addr, 6);
@@ -326,14 +314,12 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
       // Responde ao Python
       mensagem_t msg = {0};
       msg.tipo = COMANDO_PAREAMENTO;
-      msg.indice_destino = ID_TRANSMISSOR;
-      msg.indice_remetente = memoria.indice;
       memcpy(msg.payload.pareamento.mac, meu_mac, 6);
       DEBUG_PRINTF("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                    msg.payload.pareamento.mac[0], msg.payload.pareamento.mac[1],
                    msg.payload.pareamento.mac[2], msg.payload.pareamento.mac[3],
                    msg.payload.pareamento.mac[4], msg.payload.pareamento.mac[5]);
-      esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+      despachante_enfileirar(msg);
     }
     return; // Para a execução aqui, pois o comando era só para parear
   }
@@ -343,8 +329,8 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
   // ---------------------------------------------------------
 
   if (!pacote_eh_seguro(&pacote, info_pacote->src_addr))
-    return;              // Early Return: Se não for seguro, descarta imediatamente sem processar
-  cnt_pacotes_validos++; // Se passou por tudo, é um pacote válido!
+    return;                                      // Early Return: Se não for seguro, descarta imediatamente sem processar
+  cnt_pacotes_validos = cnt_pacotes_validos + 1; // Se passou por tudo, é um pacote válido!
 
   // ---------------------------------------------------------
   // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
@@ -451,6 +437,8 @@ void setup()
     rodas[i].calcular_motor = controle_pid;
   }
 
+  despachante_init();
+
   // Configura o Wi-Fi e o ESP-NOW
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -488,6 +476,7 @@ void setup()
 
 void loop()
 {
+  despachante_processar_loop();
   millis_atual = millis();
 
   if (millis_atual - millis_controle > memoria.periodo_controle_ms)
@@ -520,9 +509,6 @@ void loop()
 
     mensagem_t msg = {0};
     msg.tipo = COMANDO_TELEMETRIA;
-    msg.indice_destino = ID_TRANSMISSOR;
-    msg.indice_remetente = memoria.indice; // Ou seu ID local
-    msg.is_set = true;
 
     // Preenche os dados atuais (Delta dos Encoders) e os alvos (Target)
     for (int i = 0; i < NUMERO_RODAS; i++)
@@ -534,7 +520,6 @@ void loop()
     msg.payload.telemetria.noise_floor_carrinho = ultimo_noise_floor;
     msg.payload.telemetria.cnt_pacotes_totais = cnt_pacotes_totais;
     msg.payload.telemetria.cnt_pacotes_validos = cnt_pacotes_validos;
-    // Envia para o Transmissor
-    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+    despachante_enfileirar(msg);
   }
 }
