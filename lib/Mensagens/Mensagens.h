@@ -33,14 +33,12 @@ typedef struct __attribute__((packed)) Mensagem
   {
     struct __attribute__((packed))
     {
-      int16_t vel_esq;
-      int16_t vel_dir;
+      int16_t target_ticks[2];
     } movimento;
 
     struct __attribute__((packed))
     {
-      int16_t vel_esq[MAX_ROBOS];
-      int16_t vel_dir[MAX_ROBOS];
+      int16_t target_ticks[2][MAX_ROBOS];
     } movimento_global;
 
     struct __attribute__((packed))
@@ -87,17 +85,14 @@ typedef struct __attribute__((packed)) Mensagem
     struct __attribute__((packed))
     {
       int passo_maximo_pwm;
-      int intervalo_rampa_ms;
-      uint32_t tempo_ttl_ms;
+      uint32_t periodo_ttl_ms;
     } config_sistema;
 
     struct __attribute__((packed))
     {
-      uint16_t intervalo;
-      int16_t vel_esq_atual;
-      int16_t vel_dir_atual;
-      int16_t vel_esq_target;
-      int16_t vel_dir_target;
+      uint16_t periodo_telemetria_ms;
+      int16_t delta_ticks_atual[2];
+      int16_t delta_ticks_target[2];
       int8_t rssi_transmissor;
       int8_t noise_floor_transmissor;
       int8_t rssi_carrinho;

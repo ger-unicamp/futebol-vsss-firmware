@@ -1,18 +1,12 @@
 #include "Motor.h"
 
-Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir)
+Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir, uint16_t passoMaximo)
 {
   Motor m;
   m.pinoPWM = pinoPWM;
   m.pinoDir = pinoDir;
   m.pwmAtual = 0;
-  m.pwmAlvo = 0;
-  m.passoMaximo = PASSO_MAXIMO;
-  m.ultimoTempoMs = 0;
-  m.intervaloMs = INTERVALO_MS;
-
-  // CORREÇÃO: Desanexa qualquer configuração fantasma do pino para evitar falta de Timers
-  // ledcDetach(m.pinoPWM);
+  m.passoMaximo = passoMaximo;
 
   // O pino de direção só cuida da polaridade
   pinMode(m.pinoDir, OUTPUT);
@@ -20,12 +14,12 @@ Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir)
 
   // O pino de PWM vai para o periférico LEDC
   ledcAttach(m.pinoPWM, FREQ_PWM_ALTA, RESOLUCAO_PWM);
-  ledcWrite(m.pinoPWM, 0);
+  ledcWrite(m.pinoPWM, m.pwmAtual);
 
   return m;
 }
 
-void moverMotor(Motor *motor, int pwmDesejado)
+void moverMotor(Motor *motor, int16_t pwmDesejado)
 {
   // 1. Limita o alvo aos limites físicos do PWM (agora vai até -1023 e 1023 corretamente)
   if (pwmDesejado > PID_MAX_PWM)
@@ -33,46 +27,28 @@ void moverMotor(Motor *motor, int pwmDesejado)
   if (pwmDesejado < PID_MIN_PWM)
     pwmDesejado = PID_MIN_PWM;
 
-  motor->pwmAlvo = pwmDesejado;
-
-  // 2. Verifica se já passou o tempo necessário para dar o próximo passo
-  uint32_t tempoAtual = millis();
-  if (tempoAtual - motor->ultimoTempoMs >= motor->intervaloMs)
+  // 2. Aplica o passo máximo para evitar mudanças bruscas
+  int16_t delta = pwmDesejado - motor->pwmAtual;
+  if (abs(delta) > motor->passoMaximo)
   {
-    int diferenca = motor->pwmAlvo - motor->pwmAtual;
-
-    // Troca máxima instantânea permitida
-    if (diferenca > motor->passoMaximo)
-    {
-      motor->pwmAtual += motor->passoMaximo;
-    }
-    else if (diferenca < -motor->passoMaximo)
-    {
-      motor->pwmAtual -= motor->passoMaximo;
-    }
+    if (delta > 0)
+      pwmDesejado = motor->pwmAtual + motor->passoMaximo;
     else
-    {
-      motor->pwmAtual = motor->pwmAlvo;
-    }
-
-    // Atualiza o relógio interno do motor
-    motor->ultimoTempoMs = tempoAtual;
+      pwmDesejado = motor->pwmAtual - motor->passoMaximo;
   }
 
   // 3. Aplica o sinal físico aos pinos baseado no pwmAtual seguro
-  int velocidadeAplicada = motor->pwmAtual;
-
-  if (velocidadeAplicada >= 0)
+  if (pwmDesejado >= 0)
   {
     digitalWrite(motor->pinoDir, LOW);
   }
   else
   {
     digitalWrite(motor->pinoDir, HIGH);
-    velocidadeAplicada = velocidadeAplicada + PID_MAX_PWM;
+    pwmDesejado = pwmDesejado + PID_MAX_PWM;
   }
 
-  ledcWrite(motor->pinoPWM, velocidadeAplicada);
+  ledcWrite(motor->pinoPWM, pwmDesejado);
 }
 
 void tocarSomMotor(Motor *motor, uint32_t frequencia, uint32_t duracao_ms)
@@ -90,6 +66,4 @@ void tocarSomMotor(Motor *motor, uint32_t frequencia, uint32_t duracao_ms)
 
   // Reseta o estado para evitar que o motor tente "compensar" uma diferença irreal
   motor->pwmAtual = 0;
-  motor->pwmAlvo = 0;
-  motor->ultimoTempoMs = millis();
 }
