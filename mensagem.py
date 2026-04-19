@@ -238,7 +238,7 @@ class PonteESP32:
             payload.movimento.vel_esq = vel_esq
             payload.movimento.vel_dir = vel_dir
             
-        print(f"\n[--> SEND] Enviando MOVIMENTO (Robô {indice}) | Esq: {vel_esq}, Dir: {vel_dir}...")
+        # print(f"\n[--> SEND] Enviando MOVIMENTO (Robô {indice}) | Esq: {vel_esq}, Dir: {vel_dir}...")
         self._enviar_mensagem('COMANDO_MOVIMENTO', indice, True, set_payload)
 
     def enviar_set_id(self, mac_bytes, novo_id):
@@ -358,7 +358,7 @@ class PonteESP32:
             msg = self.ffi.from_buffer("Mensagem *", raw_bytes)
             
             # Trata a resposta do comando de ECHO
-            if msg.tipo in (self.enums.get('COMANDO_ID'), self.enums.get('COMANDO_PAREAMENTO')):
+            if msg.tipo == self.enums.get('COMANDO_ID'):
                 # 1. Para o cronômetro e calcula o RTT em milissegundos
                 tempo_atual = time.time()
                 ping_ms = (tempo_atual - self.timestamp_ultimo_echo) * 1000.0
@@ -377,6 +377,11 @@ class PonteESP32:
                 
                 # 4. Imprime o log com o novo medidor de Ping!
                 print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {rssi} dBm | Ping: {ping_ms:.1f} ms")
+                return
+            elif msg.tipo == self.enums.get('COMANDO_PAREAMENTO'):
+                mac_bytes = msg.payload.pareamento.mac
+                mac_str = ":".join([f"{b:02X}" for b in mac_bytes])
+                print(f"\n[<-- RECV PAREAMENTO] Robô {msg.indice_remetente} | MAC: {mac_str}")
                 return
 
             elif msg.tipo == self.enums.get('COMANDO_PID'):
@@ -408,8 +413,16 @@ class PonteESP32:
                 dir_atual = msg.payload.telemetria.vel_dir_atual
                 esq_target = msg.payload.telemetria.vel_esq_target
                 dir_target = msg.payload.telemetria.vel_dir_target
-            
-                print(f"[ROBÔ {msg.indice_remetente} TELEMETRIA] Esq: {esq_atual}/{esq_target} | Dir: {dir_atual}/{dir_target}")
+                rssi_transmissor = msg.payload.telemetria.rssi_transmissor
+                snr_transmissor = rssi_transmissor - msg.payload.telemetria.noise_floor_transmissor
+                rssi_carrinho = msg.payload.telemetria.rssi_carrinho
+                snr_carrinho = rssi_carrinho - msg.payload.telemetria.noise_floor_carrinho
+                cnt_pacotes_validos = msg.payload.telemetria.cnt_pacotes_validos
+                cnt_pacotes_totais = msg.payload.telemetria.cnt_pacotes_totais
+                rate_validos_totais = (cnt_pacotes_validos / cnt_pacotes_totais) if cnt_pacotes_totais > 0 else 0.0
+
+                # print(f"[ROBÔ {msg.indice_remetente} TELEMETRIA] Esq: {esq_atual}/{esq_target} | Dir: {dir_atual}/{dir_target}")
+                print(f"[ROBÔ {msg.indice_remetente} TELEMETRIA] Esq: {esq_atual}/{esq_target} | Dir: {dir_atual}/{dir_target} | RSSI Tx: {rssi_transmissor} dBm | SNR Tx: {snr_transmissor} dB | RSSI Rx: {rssi_carrinho} dBm | SNR Rx: {snr_carrinho} dB | Pacotes Válidos/Totais: {cnt_pacotes_validos}/{cnt_pacotes_totais} ({rate_validos_totais:.1%})")
             else:
                 print(f"\n[<-- RECV] Mensagem do Robô {msg.indice_remetente} | Tipo Comando: 0x{msg.tipo:02X} | Payload bruto: {raw_bytes.hex()}")
 

@@ -98,6 +98,12 @@ typedef struct __attribute__((packed)) Mensagem
       int16_t vel_dir_atual;
       int16_t vel_esq_target;
       int16_t vel_dir_target;
+      int8_t rssi_transmissor;
+      int8_t noise_floor_transmissor;
+      int8_t rssi_carrinho;
+      int8_t noise_floor_carrinho;
+      uint32_t cnt_pacotes_totais;
+      uint32_t cnt_pacotes_validos;
     } telemetria;
 
   } payload;

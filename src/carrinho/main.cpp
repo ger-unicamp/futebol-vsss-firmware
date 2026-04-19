@@ -46,25 +46,27 @@
 
 // Comando para broadcast (Todos os carrinhos)
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-uint8_t mac_esp_principal;
-esp_now_peer_info_t peerInfo;
 
 // Variáveis de controle TIME TO LIVE (TTL) para os comandos de movimento
 uint32_t tempo_ttl_ms = 500; // Tempo de vida do comando em ms (TTL)
-unsigned long millis_ttl = 0;
-bool ttl_ativo = false;
+uint32_t millis_ttl = 0;
+bool ttl_ativo = true;
 
 // Criar as instâncias dos Motores
+uint32_t millis_att = 0;
 Motor motor0 = {0};
 Motor motor1 = {0};
 Encoder encoder0 = {0};
 Encoder encoder1 = {0};
-Mensagem msg;
 bool pareado = false;
-unsigned long millis_att = 0;
 DadosConfig memoria;
 
-unsigned long millis_telemetria = 0;
+uint8_t ultimo_rssi = 0;
+uint8_t ultimo_noise_floor = 0;
+uint32_t cnt_pacotes_totais = 0;
+uint32_t cnt_pacotes_validos = 0;
+
+uint32_t millis_telemetria = 0;
 uint32_t intervalo_telemetria_ms = 0; // 0 -> desativado
 
 // Prototipação das funções de controle (PID e Autotune)
@@ -81,9 +83,6 @@ float target_ticks_1 = 0;
 
 PidAutotune tuneMotor0 = {0};
 PidAutotune tuneMotor1 = {0};
-
-unsigned long cnt_pacotes_totais = 0;
-unsigned long cnt_pacotes_validos = 0;
 
 typedef float (*FuncaoControle)(float setpoint, float medido);
 FuncaoControle calcular_motor0;
@@ -216,6 +215,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       resposta.indice_destino = ID_TRANSMISSOR;
       resposta.indice_remetente = memoria.indice;
       esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.pareamento.mac); // Coleta o próprio MAC
+      delay(100);
       DEBUG_PRINTF("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                    resposta.payload.pareamento.mac[0], resposta.payload.pareamento.mac[1],
                    resposta.payload.pareamento.mac[2], resposta.payload.pareamento.mac[3],
@@ -252,6 +252,13 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   // ---------------------------------------------------------
   // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
   // ---------------------------------------------------------
+
+  if (intervalo_telemetria_ms) // se a telemetria estiver ativada, guarda o rssi e snr do transmissor e do carrinho para enviar junto com a telemetria na próxima vez
+  {
+    ultimo_rssi = info_pacote->rx_ctrl->rssi;
+    ultimo_noise_floor = info_pacote->rx_ctrl->noise_floor;
+  }
+
   switch (pacote.tipo)
   {
   case COMANDO_MOVIMENTO:
@@ -259,8 +266,8 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     target_ticks_0 = pacote.payload.movimento.vel_esq;
     target_ticks_1 = pacote.payload.movimento.vel_dir;
     millis_ttl = millis();
+    ttl_ativo = true;
     break;
-    // retornar msg com deltatiks algo e lidos
   }
   case COMANDO_MOVIMENTO_GLOBAL:
   {
@@ -269,6 +276,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       target_ticks_0 = pacote.payload.movimento_global.vel_esq[memoria.indice];
       target_ticks_1 = pacote.payload.movimento_global.vel_dir[memoria.indice];
       millis_ttl = millis();
+      ttl_ativo = true;
     }
     break;
   }
@@ -385,6 +393,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       memoria.intervalo_rampa_ms = pacote.payload.config_sistema.intervalo_rampa_ms;
       memoria.tempo_ttl_ms = pacote.payload.config_sistema.tempo_ttl_ms;
 
+      tempo_ttl_ms = memoria.tempo_ttl_ms; // Atualiza o TTL em tempo real para não precisar esperar um novo comando de movimento
       // Atualiza os motores em tempo real!
       motor0.passoMaximo = memoria.passo_maximo_pwm;
       motor0.intervaloMs = memoria.intervalo_rampa_ms;
@@ -397,16 +406,18 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   }
   case COMANDO_TELEMETRIA:
   {
-    if (msg.is_set)
+    if (pacote.is_set)
     {
-      intervalo_telemetria_ms = msg.payload.telemetria.intervalo;
+      intervalo_telemetria_ms = pacote.payload.telemetria.intervalo;
       if (intervalo_telemetria_ms > 0)
       {
-        esp_print("Tele:on %dms", intervalo_telemetria_ms);
+        DEBUG_PRINTLN("Ativando telemetria... {intervalo: " + String(intervalo_telemetria_ms) + "ms}");
+        esp_printf("Tele:on %u ms", intervalo_telemetria_ms);
       }
       else
       {
-        esp_print("Tele:off");
+        DEBUG_PRINTLN("Desativando telemetria...");
+        esp_printf("Tele:off");
       }
     }
     break;
@@ -430,7 +441,8 @@ void setup()
   {
     pareado = false;
     DEBUG_PRINTLN("Falha na Flash ou Configuração não encontrada. Definindo novos valores...");
-    uint8_t mac_novo[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    uint8_t mac_novo[6] = {0};
+    memset(memoria.mac_esp_principal, 0, 6);
     memcpy(memoria.mac_esp_principal, mac_novo, 6);
     memoria.indice = 255;
     memoria.pid0 = {2.5f, 0.8f, 0.01f, 5.0f};
@@ -486,6 +498,7 @@ void setup()
   esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv)); // Registra a função de callback para receber dados via ESP-NOW
 
   // adiciona o peer de broadcast para garantir que pode enviar respostas para o transmissor
+  esp_now_peer_info_t peerInfo;
   memset(&peerInfo, 0, sizeof(peerInfo));
   memcpy(peerInfo.peer_addr, broadcastAddress, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
@@ -547,7 +560,12 @@ void loop()
     msgTelemetria.payload.telemetria.vel_dir_atual = encoder1.delta_ticks;
     msgTelemetria.payload.telemetria.vel_esq_target = target_ticks_0;
     msgTelemetria.payload.telemetria.vel_dir_target = target_ticks_1;
-
+    msgTelemetria.payload.telemetria.rssi_carrinho = ultimo_rssi;
+    msgTelemetria.payload.telemetria.noise_floor_carrinho = ultimo_noise_floor;
+    msgTelemetria.payload.telemetria.cnt_pacotes_totais = cnt_pacotes_totais;
+    msgTelemetria.payload.telemetria.cnt_pacotes_validos = cnt_pacotes_validos;
+    cnt_pacotes_totais = 0;
+    cnt_pacotes_validos = 0;
     // Envia para o Transmissor
     esp_now_send(broadcastAddress, (uint8_t *)&msgTelemetria, sizeof(msgTelemetria));
   }

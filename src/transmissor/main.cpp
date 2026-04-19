@@ -50,7 +50,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   uint8_t id = pacote.indice_remetente;
 
   // Se o carrinho enviou Pareamento ou Echo, atualizamos a lista de confiáveis na RAM!
-  if (pacote.tipo == COMANDO_PAREAMENTO || pacote.tipo == COMANDO_PID)
+  if (pacote.tipo == COMANDO_PAREAMENTO || pacote.tipo == COMANDO_ID)
   {
     if (id > 0 && id <= MAX_ROBOS)
     {
@@ -69,6 +69,16 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255) // Se o MAC não bater com o que temos registrado para aquele ID (e não for broadcast), ignora
         return;                                                      // Desconhecido fingindo ser o robô!
     }
+  }
+
+  if (pacote.tipo == COMANDO_TELEMETRIA)
+  {
+    // RSSI e SNR medidos pelo receptor (Transmissor) agora
+    pacote.payload.telemetria.rssi_transmissor = info_pacote->rx_ctrl->rssi;
+    pacote.payload.telemetria.noise_floor_transmissor = info_pacote->rx_ctrl->noise_floor;
+
+    // Atualizamos o buffer de dados com os novos valores injetados
+    memcpy((void *)dados, &pacote, sizeof(Mensagem));
   }
 
   // Se passou por tudo, repassa a struct via Serial para o Python ler o MAC
