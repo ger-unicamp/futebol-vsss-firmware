@@ -1,4 +1,4 @@
-#include "Encoder.h"
+#include "encoder.h"
 
 void inicializar_encoder(encoder_t *enc, uint8_t pA, uint8_t pB)
 {

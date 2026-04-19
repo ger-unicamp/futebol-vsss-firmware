@@ -1,8 +1,8 @@
 #pragma once
 #include <Arduino.h>
 #include <esp_now.h>
-#include "Mensagens.h"
-#include "Memoria.h"
+#include "mensagem.h"
+#include "memoria.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 

@@ -1,10 +1,10 @@
-#include "Despachante.h"
+#include "despachante.h"
 
 // Cria uma fila capaz de guardar 10 mensagens em espera
 static QueueHandle_t fila_tx;
 
 // Puxa as suas variáveis globais que já existem no main.cpp
-extern dados_config memoria;
+extern memoria_t memoria;
 
 void despachante_init()
 {

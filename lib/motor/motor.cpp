@@ -1,4 +1,4 @@
-#include "Motor.h"
+#include "motor.h"
 
 motor_t criar_motor(uint8_t pinoPWM, uint8_t pinoDir, uint16_t passoMaximo)
 {

@@ -5,12 +5,12 @@
 #include <esp_mac.h>
 #include <stdarg.h>
 
-#include "Mensagens.h"
-#include "Motor.h"
-#include "Encoder.h"
-#include "Memoria.h"
-#include "PID.h"
-#include "Despachante.h"
+#include "mensagem.h"
+#include "motor.h"
+#include "encoder.h"
+#include "memoria.h"
+#include "pid.h"
+#include "despachante.h"
 
 // Comente esta linha ou mude para 0 para desativar o modo Debug
 #define DEBUG_ENABLE
@@ -39,7 +39,7 @@
 #define ESQ 1 // indice roda esquerda
 
 // Estrutura para guardar os parâmetros na memoria Flash
-dados_config memoria;
+memoria_t memoria;
 
 // Variáveis de rede e ESP-NOW
 uint8_t meu_mac[6];
