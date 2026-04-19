@@ -1,3 +1,4 @@
+from pathlib import Path
 import serial
 import struct
 import threading
@@ -6,11 +7,46 @@ import re
 from cffi import FFI
 import serial.tools.list_ports
 
+def localizar_transmissor(vid=0x303a, pid=0x1001):
+    """Procura a porta serial do ESP32 baseada no VID/PID."""
+    portas = serial.tools.list_ports.comports()
+    for port in portas:
+        if port.vid == vid and port.pid == pid:
+            return port.device
+
+    # padroes = ["CP210", "CH340", "USB Serial", "S3", "ACM", "UART"]
+    padroes = ["ACM"]
+    for p in portas:
+        for padrao in padroes:
+            if padrao.upper() in p.description.upper() or padrao.upper() in p.device.upper():
+                print(f"[*] Transmissor encontrado: {p.device} ({p.description})")
+                return p.device
+    return None
+
 class PonteESP32:
     def __init__(self, porta, baudrate, header_path):
+        # --- DESCOBERTA AUTOMÁTICA DO HEADER ---
+        if header_path is None:
+            # Pega a pasta onde este arquivo (mensagem.py) está
+            base_path = Path(__file__).parent
+            # Monta o caminho relativo padrão dentro do submódulo
+            header_path = base_path / "lib" / "Mensagens" / "Mensagens.h"
+            
+        if not Path(header_path).exists():
+            raise FileNotFoundError(
+                f"Header não encontrado em: {header_path}\n"
+                "Verifique se o submódulo foi atualizado: git submodule update --init"
+            )
+
         # 1. Analisa e carrega as definições do Mensagens.h
         self.ffi, self.defines, self.enums = self._parse_header(header_path)
-        
+
+        # --- DESCOBERTA AUTOMÁTICA DA PORTA ---
+        if porta is None:
+            porta = localizar_transmissor()
+            if not porta:
+                raise ConnectionError("Falha na autodescoberta: Nenhum ESP32 (Transmissor) encontrado.") 
+
         # 2. Inicia a conexão Serial
         self.serial = serial.Serial(porta, baudrate, timeout=0.1)
         
@@ -388,22 +424,6 @@ class PonteESP32:
         self.serial.close()
 
 
-def localizar_transmissor():
-    """Procura automaticamente pela porta serial do ESP32 Transmissor"""
-    portas = serial.tools.list_ports.comports()
-    
-    # Lista de padrões comuns de descrição/ID para ESP32
-    # CP210x, CH340 e o JTAG nativo do ESP32-S3/C3 (ACM)
-    # padroes = ["CP210", "CH340", "USB Serial", "S3", "ACM", "UART"]
-    padroes = ["ACM"]
-    
-    for p in portas:
-        for padrao in padroes:
-            if padrao.upper() in p.description.upper() or padrao.upper() in p.device.upper():
-                print(f"[*] Transmissor encontrado: {p.device} ({p.description})")
-                return p.device
-    return None
-
 # ==========================================
 # Terminal Interativo
 # ==========================================
@@ -430,7 +450,8 @@ if __name__ == "__main__":
     print(" - get_pid <robo_id> <roda_0_ou_1>")
     print(" - set_pid <robo_id> <roda> <kp> <ki> <kd>")
     print(" - autotune <robo_id> <roda> <pwm_max> <pwm_min> <ciclos> <target_ticks>")
-    print(" - salvar <robo_id>") # Nova linha
+    print(" - salvar <robo_id>")
+    print(" - telemetria <id_robo> <intervalo_ms (0 para desligar)>")
     print(" - sair")
     print("="*40 + "\n")
 
