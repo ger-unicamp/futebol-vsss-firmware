@@ -15,15 +15,11 @@
 #define DEBUG_ENABLE
 
 #ifdef DEBUG_ENABLE
-#define DEBUG_PRINT(x) Serial.print(x)
-#define DEBUG_PRINTLN(x) Serial.println(x)
-#define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
 #define DEBUG_BEGIN(x) Serial.begin(x)
+#define DEBUG_PRINTF(...) Serial.printf(__VA_ARGS__)
 #else
-#define DEBUG_PRINT(x)
-#define DEBUG_PRINTLN(x)
-#define DEBUG_PRINTF(...)
 #define DEBUG_BEGIN(x)
+#define DEBUG_PRINTF(...)
 #endif
 
 // conexoes dos motores e encoders
@@ -51,6 +47,8 @@ uint8_t ultimo_noise_floor;
 uint32_t cnt_pacotes_totais;
 uint32_t cnt_pacotes_validos;
 
+// Variável para ativar/desativar o envio de logs via ESP-NOW
+bool esp_print_ativo = true;
 // Variáveis de controle de Tasks
 bool periodo_ttl_ativo;
 uint32_t millis_atual;
@@ -76,6 +74,31 @@ Roda rodas[NUMERO_RODAS];
 CRIAR_ISR_ENCODER(isr0, rodas[DIR].encoder)
 CRIAR_ISR_ENCODER(isr1, rodas[ESQ].encoder)
 
+// Função para enviar mensagens de texto de debug formatadas para o Python via ESP-NOW
+void esp_printf(const char *formato, ...)
+{
+  Mensagem msg;
+  msg.tipo = COMANDO_PRINT;
+  msg.indice_destino = ID_TRANSMISSOR; // Envia para o PC
+  msg.indice_remetente = memoria.indice;
+
+  // 1. Formata a string (como um printf) diretamente dentro do payload da mensagem
+  va_list args;
+  va_start(args, formato);
+  vsnprintf(msg.payload.print.texto, sizeof(msg.payload.print.texto), formato, args);
+  va_end(args);
+
+  // 2. Sempre imprime na porta Serial (se o DEBUG_ENABLE estiver ativado)
+  // Nota: o formato não recebe "\n" automático aqui para manter o comportamento exato do printf
+  DEBUG_PRINTF("%s", msg.payload.print.texto);
+
+  // 3. Envia via ESP-NOW apenas se o print de rede estiver ativado e o carrinho pareado
+  if (esp_print_ativo && memoria.pareado)
+  {
+    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+  }
+}
+
 float controle_pid(Roda *roda, float setpoint, float medido)
 {
   return pid_computar(&(*roda).pidMotor, setpoint, medido);
@@ -88,7 +111,7 @@ float controle_autotune(Roda *roda, float setpoint, float medido)
   // Se o autotune acabou nesta iteração:
   if (!roda->tuneMotor.ativo)
   {
-    DEBUG_PRINTLN("Autotune Motor 0 Finalizado!");
+    esp_printf("tune m%d feito!\n", roda->indice_roda);
 
     // 1. Devolve o controle pro PID normal!
     roda->calcular_motor = controle_pid;
@@ -115,22 +138,133 @@ float controle_autotune(Roda *roda, float setpoint, float medido)
   return pwm;
 }
 
-// Função para enviar mensagens de texto de debug formatadas para o Python via ESP-NOW
-void esp_printf(const char *formato, ...)
+void tratar_comando_movimento(const Mensagem *pacote)
 {
-  Mensagem msg;
-  msg.tipo = COMANDO_PRINT;
-  msg.indice_destino = ID_TRANSMISSOR; // Envia para o PC
-  msg.indice_remetente = memoria.indice;
+  for (int i = 0; i < NUMERO_RODAS; i++)
+    rodas[i].delta_ticks_target = pacote->payload.movimento.target_ticks[i];
+  millis_ttl = millis();
+  periodo_ttl_ativo = true;
+}
 
-  // Lógica para formatar a string (como um printf)
-  va_list args;
-  va_start(args, formato);
-  vsnprintf(msg.payload.print.texto, sizeof(msg.payload.print.texto), formato, args);
-  va_end(args);
+void tratar_comando_movimento_global(const Mensagem *pacote)
+{
+  if (memoria.indice < MAX_ROBOS)
+  {
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      rodas[i].delta_ticks_target = pacote->payload.movimento_global.target_ticks[i][memoria.indice];
+    millis_ttl = millis();
+    periodo_ttl_ativo = true;
+  }
+}
 
-  // Envia via ESP-NOW
-  esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
+void tratar_comando_id(const Mensagem *pacote, const esp_now_recv_info_t *info_pacote)
+{
+  if (pacote->is_set)
+  {
+    uint8_t meu_mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, meu_mac);
+    bool mac_eh_meu = true;
+    for (int i = 0; i < 6; i++)
+    {
+      if (pacote->payload.set_id.mac_alvo[i] != meu_mac[i])
+      {
+        mac_eh_meu = false;
+        break;
+      }
+    }
+    if (mac_eh_meu)
+    {
+      memoria.indice = pacote->payload.set_id.novo_id;
+    }
+  }
+
+  Mensagem resposta;
+  esp_printf("ECHO - ID: %d\n", memoria.indice);
+  resposta.indice_remetente = memoria.indice;
+  resposta.tipo = COMANDO_ID;
+  resposta.indice_destino = ID_TRANSMISSOR;
+  resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;
+  esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.echo.mac);
+  esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&resposta, sizeof(resposta));
+}
+
+void tratar_comando_pid(const Mensagem *pacote)
+{
+  if (pacote->is_set)
+  {
+    int i_roda = pacote->payload.pidconfig.roda;
+
+    memoria.pid[i_roda].kp = pacote->payload.pidconfig.kp;
+    memoria.pid[i_roda].ki = pacote->payload.pidconfig.ki;
+    memoria.pid[i_roda].kd = pacote->payload.pidconfig.kd;
+    memoria.pid[i_roda].kf = pacote->payload.pidconfig.kf;
+
+    // Correção: Usando ponteiro para modificar a roda global e não uma cópia
+    Roda *roda = &rodas[i_roda];
+    roda->pidMotor.kp = memoria.pid[i_roda].kp;
+    roda->pidMotor.ki = memoria.pid[i_roda].ki;
+    roda->pidMotor.kd = memoria.pid[i_roda].kd;
+    roda->pidMotor.kf = memoria.pid[i_roda].kf;
+    pid_resetar(&roda->pidMotor);
+  }
+
+  Mensagem resposta;
+  resposta.tipo = COMANDO_PID;
+  resposta.indice_destino = ID_TRANSMISSOR;
+  resposta.indice_remetente = memoria.indice;
+  for (int i = 0; i < NUMERO_RODAS; i++)
+  {
+    resposta.payload.pidconfig.roda = i;
+    resposta.payload.pidconfig.kp = rodas[i].pidMotor.kp;
+    resposta.payload.pidconfig.ki = rodas[i].pidMotor.ki;
+    resposta.payload.pidconfig.kd = rodas[i].pidMotor.kd;
+    resposta.payload.pidconfig.kf = rodas[i].pidMotor.kf;
+    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&resposta, sizeof(resposta));
+  }
+}
+
+void tratar_comando_autotune_pid(const Mensagem *pacote)
+{
+  periodo_ttl_ativo = false;
+  Roda *roda = &rodas[pacote->payload.autotune.roda];
+
+  autotune_iniciar(&roda->tuneMotor, pacote->payload.autotune.pwm_teste_max, pacote->payload.autotune.pwm_teste_min, pacote->payload.autotune.ciclos);
+  roda->delta_ticks_target = pacote->payload.autotune.target_ticks;
+  roda->calcular_motor = controle_autotune;
+}
+
+void tratar_comando_salvar()
+{
+  if (salvar_config(&memoria))
+    esp_printf("Salvo!\n");
+  else
+    esp_printf("Erro na Flash.\n");
+}
+
+void tratar_comando_config_sistema(const Mensagem *pacote)
+{
+  if (pacote->is_set)
+  {
+    memoria.passo_maximo_pwm = pacote->payload.config_sistema.passo_maximo_pwm;
+    memoria.periodo_ttl_ms = pacote->payload.config_sistema.periodo_ttl_ms;
+    for (int i = 0; i < NUMERO_RODAS; i++)
+    {
+      rodas[i].motor.passoMaximo = memoria.passo_maximo_pwm;
+    }
+    esp_print("Recebido.\n");
+  }
+}
+
+void tratar_comando_telemetria(const Mensagem *pacote)
+{
+  if (pacote->is_set)
+  {
+    memoria.periodo_telemetria_ms = pacote->payload.telemetria.periodo_telemetria_ms;
+    if (memoria.periodo_telemetria_ms > 0)
+      esp_printf("Tele:on %u ms\n", memoria.periodo_telemetria_ms);
+    else
+      esp_printf("Tele:off\n");
+  }
 }
 
 // Callback para receber mensagens via ESP-NOW
@@ -159,7 +293,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
 
       // Habilita a comunicação sem gastar a memória Flash
       memoria.pareado = true;
-      DEBUG_PRINTLN("Pareamento concluído na RAM! Lembre-se de usar o COMANDO_SALVAR para persistir.");
+      esp_print("Pareado. use SALVAR.\n");
 
       // Responde ao Python
       Mensagem resposta;
@@ -204,8 +338,11 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   // ---------------------------------------------------------
   // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
   // ---------------------------------------------------------
+  // ---------------------------------------------------------
+  // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
+  // ---------------------------------------------------------
 
-  if (memoria.periodo_telemetria_ms) // se a telemetria estiver ativada, guarda o rssi e snr do transmissor e do carrinho para enviar junto com a telemetria na próxima vez
+  if (memoria.periodo_telemetria_ms)
   {
     ultimo_rssi = info_pacote->rx_ctrl->rssi;
     ultimo_noise_floor = info_pacote->rx_ctrl->noise_floor;
@@ -214,147 +351,36 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   switch (pacote.tipo)
   {
   case COMANDO_MOVIMENTO:
-  {
-    for (int i = 0; i < NUMERO_RODAS; i++)
-      rodas[i].delta_ticks_target = pacote.payload.movimento.target_ticks[i];
-    millis_ttl = millis();
-    periodo_ttl_ativo = true;
+    tratar_comando_movimento(&pacote);
     break;
-  }
+
   case COMANDO_MOVIMENTO_GLOBAL:
-  {
-    if (memoria.indice < MAX_ROBOS)
-    {
-      for (int i = 0; i < NUMERO_RODAS; i++)
-        rodas[i].delta_ticks_target = pacote.payload.movimento_global.target_ticks[i][memoria.indice];
-      millis_ttl = millis();
-      periodo_ttl_ativo = true;
-    }
+    tratar_comando_movimento_global(&pacote);
     break;
-  }
+
   case COMANDO_ID:
-  {
-    if (pacote.is_set)
-    {
-      // Pega o próprio MAC físico para comparar
-      uint8_t meu_mac[6];
-      esp_wifi_get_mac(WIFI_IF_STA, meu_mac);
-      bool mac_eh_meu = true;
-      for (int i = 0; i < 6; i++)
-      {
-        if (pacote.payload.set_id.mac_alvo[i] != meu_mac[i])
-        {
-          mac_eh_meu = false;
-          break;
-        }
-      }
-
-      // Se o comando foi direcionado para o MAC deste carrinho físico
-      if (mac_eh_meu)
-      {
-        memoria.indice = pacote.payload.set_id.novo_id; // Atualiza o ID
-      }
-    }
-    // Prepara uma mensagem de texto simples avisando que está vivo
-    Mensagem resposta;
-    DEBUG_PRINTF("ECHO_OK - Carrinho ID: %d\n", memoria.indice);
-    resposta.indice_remetente = memoria.indice;                               // Pode ser útil para o transmissor identificar quem respondeu
-    resposta.tipo = COMANDO_ID;                                               // Define o tipo como ECHO para o transmissor reconhecer a resposta
-    resposta.indice_destino = ID_TRANSMISSOR;                                 // Responde diretamente para o transmissor
-    resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;         // Inclui o RSSI da mensagem recebida como parte do payload
-    esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.echo.mac);                 // Coleta o próprio MAC para enviar de volta
-    esp_now_send(BROADCAST_ADDRESS, (u_int8_t *)&resposta, sizeof(resposta)); // Envia
+    tratar_comando_id(&pacote, info_pacote);
     break;
-  }
+
   case COMANDO_PID:
-  {
-    if (pacote.is_set)
-    {
-      int i_roda = pacote.payload.pidconfig.roda;
-      // muda valores na Memoria
-      memoria.pid[i_roda].kp = pacote.payload.pidconfig.kp;
-      memoria.pid[i_roda].ki = pacote.payload.pidconfig.ki;
-      memoria.pid[i_roda].kd = pacote.payload.pidconfig.kd;
-      memoria.pid[i_roda].kf = pacote.payload.pidconfig.kf;
+    tratar_comando_pid(&pacote);
+    break;
 
-      // muda os valores na RAM
-      Roda roda = rodas[i_roda];
-      roda.pidMotor.kp = memoria.pid[i_roda].kp;
-      roda.pidMotor.ki = memoria.pid[i_roda].ki;
-      roda.pidMotor.kd = memoria.pid[i_roda].kd;
-      roda.pidMotor.kf = memoria.pid[i_roda].kf;
-      pid_resetar(&roda.pidMotor); // Zera o erro acumulado para não dar tranco
-    }
-    // manda duas mensagens de resposta, uma para cada roda, com os parâmetros atuais
-    Mensagem resposta;
-    resposta.tipo = COMANDO_PID;
-    resposta.indice_destino = ID_TRANSMISSOR;
-    resposta.indice_remetente = memoria.indice;
-    for (int i = 0; i < NUMERO_RODAS; i++)
-    {
-      resposta.payload.pidconfig.roda = i;
-      resposta.payload.pidconfig.kp = rodas[i].pidMotor.kp;
-      resposta.payload.pidconfig.ki = rodas[i].pidMotor.ki;
-      resposta.payload.pidconfig.kd = rodas[i].pidMotor.kd;
-      resposta.payload.pidconfig.kf = rodas[i].pidMotor.kf;
-      esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&resposta, sizeof(resposta));
-    }
-    break;
-  }
   case COMANDO_AUTOTUNE_PID:
-  {
-    periodo_ttl_ativo = false; // Desativa o TTL para não zerar os alvos durante o autotune
-    Roda roda = rodas[pacote.payload.autotune.roda];
-    autotune_iniciar(&roda.tuneMotor, pacote.payload.autotune.pwm_teste_max, pacote.payload.autotune.pwm_teste_min, pacote.payload.autotune.ciclos);
-    roda.delta_ticks_target = pacote.payload.autotune.target_ticks; // Define o alvo de ticks para o autotune
-    roda.calcular_motor = controle_autotune;                        // Muda a função
+    tratar_comando_autotune_pid(&pacote);
     break;
-  }
+
   case COMANDO_SALVAR:
-  {
-    if (salvar_config(&memoria))
-    {
-      DEBUG_PRINTLN("Parâmetros de PID salvos na flash com sucesso!");
-      esp_printf("Salvo!");
-    }
-    else
-    {
-      DEBUG_PRINTLN("Erro ao tentar salvar os parâmetros na flash.");
-      esp_printf("Erro na Flash.");
-    }
+    tratar_comando_salvar();
     break;
-  }
+
   case COMANDO_CONFIG_SISTEMA:
-  {
-    if (pacote.is_set)
-    {
-      memoria.passo_maximo_pwm = pacote.payload.config_sistema.passo_maximo_pwm;
-      memoria.periodo_ttl_ms = pacote.payload.config_sistema.periodo_ttl_ms;
-      for (int i = 0; i < NUMERO_RODAS; i++)
-        rodas[i].motor.passoMaximo = memoria.passo_maximo_pwm;
-      DEBUG_PRINTLN("Configurações Físicas atualizadas na RAM!");
-    }
-    // RETORNAR MSG
+    tratar_comando_config_sistema(&pacote);
     break;
-  }
+
   case COMANDO_TELEMETRIA:
-  {
-    if (pacote.is_set)
-    {
-      memoria.periodo_telemetria_ms = pacote.payload.telemetria.periodo_telemetria_ms;
-      if (memoria.periodo_telemetria_ms > 0)
-      {
-        DEBUG_PRINTLN("Ativando telemetria... {periodo: " + String(memoria.periodo_telemetria_ms) + "ms}");
-        esp_printf("Tele:on %u ms", memoria.periodo_telemetria_ms);
-      }
-      else
-      {
-        DEBUG_PRINTLN("Desativando telemetria...");
-        esp_printf("Tele:off");
-      }
-    }
+    tratar_comando_telemetria(&pacote);
     break;
-  }
   }
 }
 
@@ -362,16 +388,16 @@ void setup()
 {
   DEBUG_BEGIN(115200);
   delay(500);
-  DEBUG_PRINTLN("A inicializar o carrinho...");
+  DEBUG_PRINTF("A inicializar o carrinho...\n");
 
   // inicia memoria e tenta carregar o MAC do rádio principal para pareamento automático
   if (inicializar_memoria() && carregar_config(&memoria))
   {
-    DEBUG_PRINTLN("Dados carregados!");
+    DEBUG_PRINTF("Dados carregados!\n");
   }
   else
   {
-    DEBUG_PRINTLN("Falha na Flash ou Configuração não encontrada. Definindo novos valores...");
+    DEBUG_PRINTF("Falha na Flash ou Configuração não encontrada. Definindo novos valores...\n");
     uint8_t mac_novo[6] = {0};
     memset(memoria.mac_esp_principal, 0, 6);
     memcpy(memoria.mac_esp_principal, mac_novo, 6);
@@ -385,17 +411,17 @@ void setup()
     memoria.canal_wifi = 11;
 
     if (salvar_config(&memoria))
-      DEBUG_PRINTLN("Dados salvos com sucesso!");
+      DEBUG_PRINTF("Dados salvos com sucesso!\n");
     else
-      DEBUG_PRINTLN("Falha ao salvar.");
+      DEBUG_PRINTF("Falha ao salvar.\n");
   }
   DEBUG_PRINTF("MAC do transmissor: %02X:%02X:%02X:%02X:%02X:%02X\n",
                memoria.mac_esp_principal[0], memoria.mac_esp_principal[1],
                memoria.mac_esp_principal[2], memoria.mac_esp_principal[3],
                memoria.mac_esp_principal[4], memoria.mac_esp_principal[5]);
   DEBUG_PRINTF("ID: %d\n", memoria.indice);
-  DEBUG_PRINTLN("Pareado: " + String(memoria.pareado));
-  DEBUG_PRINTLN("Configurações de PID carregadas:");
+  DEBUG_PRINTF("Pareado: %s\n", String(memoria.pareado));
+  DEBUG_PRINTF("Configurações de PID carregadas:\n");
   for (int i = 0; i < 2; i++)
   {
     DEBUG_PRINTF("Motor %d - KP: %.2f, KI: %.2f, KD: %.2f, KF: %.2f\n", i, memoria.pid[i].kp, memoria.pid[i].ki, memoria.pid[i].kd, memoria.pid[i].kf);
@@ -438,7 +464,7 @@ void setup()
   memcpy(peerInfo.peer_addr, BROADCAST_ADDRESS, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
-    DEBUG_PRINTLN("Falha ao adicionar o peer de broadcast");
+    DEBUG_PRINTF("Falha ao adicionar o peer de broadcast\n");
   }
 
   periodo_ttl_ativo = true;
@@ -448,7 +474,7 @@ void setup()
   millis_ttl = millis_atual;
   millis_controle = millis_atual;
   millis_telemetria = millis_atual;
-  DEBUG_PRINTLN("Carrinho iniciado com sucesso!");
+  DEBUG_PRINTF("Carrinho iniciado com sucesso!\n");
   // tocarSomMotor(&motor0, 8000, 500);
   // tocarSomMotor(&motor1, 8000, 500);
 }
