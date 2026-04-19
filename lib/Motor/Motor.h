@@ -9,20 +9,20 @@
 #define PID_MIN_PWM -PID_MAX_PWM
 
 // Estrutura que guarda as configurações do motor
-struct Motor
+struct motor_t
 {
-  uint8_t pinoPWM;
-  uint8_t pinoDir;
+  uint8_t pin_pwm;
+  uint8_t pin_dir;
 
-  uint16_t passoMaximo;
-  uint16_t pwmAtual;
+  uint16_t passo_maximo_pwm;
+  uint16_t pwm_atual;
 };
 
 // Função que cria e inicializa uma nova struct motor
-Motor criarMotor(uint8_t pinoPWM, uint8_t pinoDir, uint16_t passoMaximo);
+motor_t criar_motor(uint8_t pinoPWM, uint8_t pinoDir, uint16_t passo_maximo_pwm);
 
 // Função que define a velocidade e a direção
-void moverMotor(Motor *motor, int16_t pwm);
+void mover_motor(motor_t *motor, int16_t pwm);
 
 // Função para emitir som usando as bobinas do motor (como buzzer) sem rodar
-void tocarSomMotor(Motor *motor, uint32_t frequencia, uint32_t duracao_ms);
+void tocar_som_motor(motor_t *motor, uint32_t frequencia, uint32_t duracao_ms);

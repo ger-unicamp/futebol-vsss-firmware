@@ -20,7 +20,7 @@ bool inicializar_memoria(void)
     return (erro == ESP_OK);
 }
 
-bool salvar_config(const DadosConfig *config)
+bool salvar_config(const dados_config *config)
 {
     nvs_handle_t nvs_handle;
     esp_err_t erro;
@@ -31,7 +31,7 @@ bool salvar_config(const DadosConfig *config)
         return false;
 
     // Salva a struct inteira como um "blob" (Binary Large Object)
-    erro = nvs_set_blob(nvs_handle, CHAVE_DADOS, config, sizeof(DadosConfig));
+    erro = nvs_set_blob(nvs_handle, CHAVE_DADOS, config, sizeof(dados_config));
 
     if (erro == ESP_OK)
     {
@@ -45,7 +45,7 @@ bool salvar_config(const DadosConfig *config)
     return (erro == ESP_OK);
 }
 
-bool carregar_config(DadosConfig *config)
+bool carregar_config(dados_config *config)
 {
     nvs_handle_t nvs_handle;
     esp_err_t erro;
@@ -56,7 +56,7 @@ bool carregar_config(DadosConfig *config)
         return false; // Provavelmente ainda não existe nada salvo
 
     // Verifica o tamanho e lê os dados
-    size_t tamanho_necessario = sizeof(DadosConfig);
+    size_t tamanho_necessario = sizeof(dados_config);
     erro = nvs_get_blob(nvs_handle, CHAVE_DADOS, config, &tamanho_necessario);
 
     // Fecha o acesso à memória

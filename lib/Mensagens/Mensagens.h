@@ -8,7 +8,7 @@
 
 void esp_print(const char *formato, ...);
 
-enum TipoComando : uint8_t
+enum tipo_comando : uint8_t
 {
   COMANDO_PAREAMENTO = 0x01,
   COMANDO_ID = 0x02,
@@ -24,7 +24,7 @@ enum TipoComando : uint8_t
 
 typedef struct __attribute__((packed)) Mensagem
 {
-  uint8_t tipo;             // O código do TipoComando (1 byte)
+  uint8_t tipo;             // O código do tipo_comando (1 byte)
   uint8_t indice_destino;   // Indice do carrinho (1 byte)
   uint8_t indice_remetente; // Indice do carrinho remetente, útil para respostas e comandos globais (1 byte)
   uint8_t is_set;
@@ -75,7 +75,7 @@ typedef struct __attribute__((packed)) Mensagem
       float ki;
       float kd;
       float kf;
-    } pidconfig;
+    } pid_config;
 
     struct __attribute__((packed))
     {
