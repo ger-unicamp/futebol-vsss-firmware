@@ -26,9 +26,6 @@
 #define DEBUG_BEGIN(x)
 #endif
 
-// Canal do Wifi
-#define CANAL 11
-
 // conexoes dos motores e encoders
 #define PH_IN1 2
 #define PH_IN2 1
@@ -40,11 +37,15 @@
 #define ENC1_PINA 0
 #define ENC1_PINB 5
 
+#define NUMERO_RODAS 2
+#define DIR 0 // indice roda direita
+#define ESQ 1 // indice roda esquerda
+#define BROADCAST_ADDRESS (uint8_t[]){0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+
 // Estrutura para guardar os parâmetros na memoria Flash
 DadosConfig memoria;
 
 // Variaveis de rede e esp now
-uint8_t broadcastAddress[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}; // Nunca muda por isso hardcoded
 uint8_t ultimo_rssi;
 uint8_t ultimo_noise_floor;
 uint32_t cnt_pacotes_totais;
@@ -55,35 +56,42 @@ bool periodo_ttl_ativo;
 uint32_t millis_atual;
 uint32_t millis_ttl;
 uint32_t millis_telemetria;
+uint32_t millis_controle;
 
-typedef float (*FuncaoControle)(int i_roda, float setpoint, float medido);
+typedef float (*FuncaoControle)(Roda *roda, float setpoint, float medido);
 
-Motor motor[2];
-Encoder encoder[2];
-PidConfig pidMotor[2];
-float delta_ticks_target[2];
-PidAutotune tuneMotor[2];
-FuncaoControle calcular_motor[2];
-
-CRIAR_ISR_ENCODER(isr0, encoder[0])
-CRIAR_ISR_ENCODER(isr1, encoder[1])
-
-float controle_pid(int i_roda, float setpoint, float medido)
+typedef struct
 {
-  return pid_computar(&pidMotor[i_roda], setpoint, medido);
+  uint8_t indice_roda;
+  Motor motor;
+  Encoder encoder;
+  PidConfig pidMotor;
+  float delta_ticks_target;
+  PidAutotune tuneMotor;
+  FuncaoControle calcular_motor;
+} Roda;
+
+Roda rodas[NUMERO_RODAS];
+
+CRIAR_ISR_ENCODER(isr0, rodas[DIR].encoder)
+CRIAR_ISR_ENCODER(isr1, rodas[ESQ].encoder)
+
+float controle_pid(Roda *roda, float setpoint, float medido)
+{
+  return pid_computar(&(*roda).pidMotor, setpoint, medido);
 }
 
-float controle_autotune(int i_roda, float setpoint, float medido)
+float controle_autotune(Roda *roda, float setpoint, float medido)
 {
-  float pwm = autotune_computar(&tuneMotor[i_roda], &pidMotor[i_roda], setpoint, medido);
+  float pwm = autotune_computar(&roda->tuneMotor, &roda->pidMotor, setpoint, medido);
 
   // Se o autotune acabou nesta iteração:
-  if (!tuneMotor[i_roda].ativo)
+  if (!roda->tuneMotor.ativo)
   {
     DEBUG_PRINTLN("Autotune Motor 0 Finalizado!");
 
     // 1. Devolve o controle pro PID normal!
-    calcular_motor[i_roda] = controle_pid;
+    roda->calcular_motor = controle_pid;
     periodo_ttl_ativo = true;
 
     // 2. Envia a mensagem de aviso pro Python
@@ -91,17 +99,17 @@ float controle_autotune(int i_roda, float setpoint, float medido)
     msgFim.tipo = COMANDO_PID;
     msgFim.indice_destino = ID_TRANSMISSOR;
     msgFim.indice_remetente = memoria.indice;
-    msgFim.payload.pidconfig.roda = i_roda;
-    msgFim.payload.pidconfig.kp = pidMotor[i_roda].kp;
-    msgFim.payload.pidconfig.ki = pidMotor[i_roda].ki;
-    msgFim.payload.pidconfig.kd = pidMotor[i_roda].kd;
-    msgFim.payload.pidconfig.kf = pidMotor[i_roda].kf;
+    msgFim.payload.pidconfig.roda = roda->indice_roda;
+    msgFim.payload.pidconfig.kp = roda->pidMotor.kp;
+    msgFim.payload.pidconfig.ki = roda->pidMotor.ki;
+    msgFim.payload.pidconfig.kd = roda->pidMotor.kd;
+    msgFim.payload.pidconfig.kf = roda->pidMotor.kf;
 
-    memoria.pid[i_roda].kp = pidMotor[i_roda].kp;
-    memoria.pid[i_roda].ki = pidMotor[i_roda].ki;
-    memoria.pid[i_roda].kd = pidMotor[i_roda].kd;
-    memoria.pid[i_roda].kf = pidMotor[i_roda].kf;
-    esp_now_send(broadcastAddress, (uint8_t *)&msgFim, sizeof(msgFim));
+    memoria.pid[roda->indice_roda].kp = roda->pidMotor.kp;
+    memoria.pid[roda->indice_roda].ki = roda->pidMotor.ki;
+    memoria.pid[roda->indice_roda].kd = roda->pidMotor.kd;
+    memoria.pid[roda->indice_roda].kf = roda->pidMotor.kf;
+    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msgFim, sizeof(msgFim));
   }
 
   return pwm;
@@ -122,7 +130,7 @@ void esp_printf(const char *formato, ...)
   va_end(args);
 
   // Envia via ESP-NOW
-  esp_now_send(broadcastAddress, (uint8_t *)&msg, sizeof(msg));
+  esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msg, sizeof(msg));
 }
 
 // Callback para receber mensagens via ESP-NOW
@@ -164,7 +172,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
                    resposta.payload.pareamento.mac[0], resposta.payload.pareamento.mac[1],
                    resposta.payload.pareamento.mac[2], resposta.payload.pareamento.mac[3],
                    resposta.payload.pareamento.mac[4], resposta.payload.pareamento.mac[5]);
-      esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta));
+      esp_now_send(BROADCAST_ADDRESS, (u_int8_t *)&resposta, sizeof(resposta));
     }
     return; // Para a execução aqui, pois o comando era só para parear
   }
@@ -207,8 +215,8 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   {
   case COMANDO_MOVIMENTO:
   {
-    for (int i = 0; i < 2; i++)
-      delta_ticks_target[i] = pacote.payload.movimento.target_ticks[i];
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      rodas[i].delta_ticks_target = pacote.payload.movimento.target_ticks[i];
     millis_ttl = millis();
     periodo_ttl_ativo = true;
     break;
@@ -217,8 +225,8 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   {
     if (memoria.indice < MAX_ROBOS)
     {
-      for (int i = 0; i < 2; i++)
-        delta_ticks_target[i] = pacote.payload.movimento_global.target_ticks[i][memoria.indice];
+      for (int i = 0; i < NUMERO_RODAS; i++)
+        rodas[i].delta_ticks_target = pacote.payload.movimento_global.target_ticks[i][memoria.indice];
       millis_ttl = millis();
       periodo_ttl_ativo = true;
     }
@@ -250,12 +258,12 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     // Prepara uma mensagem de texto simples avisando que está vivo
     Mensagem resposta;
     DEBUG_PRINTF("ECHO_OK - Carrinho ID: %d\n", memoria.indice);
-    resposta.indice_remetente = memoria.indice;                              // Pode ser útil para o transmissor identificar quem respondeu
-    resposta.tipo = COMANDO_ID;                                              // Define o tipo como ECHO para o transmissor reconhecer a resposta
-    resposta.indice_destino = ID_TRANSMISSOR;                                // Responde diretamente para o transmissor
-    resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;        // Inclui o RSSI da mensagem recebida como parte do payload
-    esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.echo.mac);                // Coleta o próprio MAC para enviar de volta
-    esp_now_send(broadcastAddress, (u_int8_t *)&resposta, sizeof(resposta)); // Envia
+    resposta.indice_remetente = memoria.indice;                               // Pode ser útil para o transmissor identificar quem respondeu
+    resposta.tipo = COMANDO_ID;                                               // Define o tipo como ECHO para o transmissor reconhecer a resposta
+    resposta.indice_destino = ID_TRANSMISSOR;                                 // Responde diretamente para o transmissor
+    resposta.payload.echo.rssi = (uint8_t)info_pacote->rx_ctrl->rssi;         // Inclui o RSSI da mensagem recebida como parte do payload
+    esp_wifi_get_mac(WIFI_IF_STA, resposta.payload.echo.mac);                 // Coleta o próprio MAC para enviar de volta
+    esp_now_send(BROADCAST_ADDRESS, (u_int8_t *)&resposta, sizeof(resposta)); // Envia
     break;
   }
   case COMANDO_PID:
@@ -270,35 +278,36 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       memoria.pid[i_roda].kf = pacote.payload.pidconfig.kf;
 
       // muda os valores na RAM
-      pidMotor[i_roda].kp = memoria.pid[i_roda].kp;
-      pidMotor[i_roda].ki = memoria.pid[i_roda].ki;
-      pidMotor[i_roda].kd = memoria.pid[i_roda].kd;
-      pidMotor[i_roda].kf = memoria.pid[i_roda].kf;
-      pid_resetar(&pidMotor[i_roda]); // Zera o erro acumulado para não dar tranco
+      Roda roda = rodas[i_roda];
+      roda.pidMotor.kp = memoria.pid[i_roda].kp;
+      roda.pidMotor.ki = memoria.pid[i_roda].ki;
+      roda.pidMotor.kd = memoria.pid[i_roda].kd;
+      roda.pidMotor.kf = memoria.pid[i_roda].kf;
+      pid_resetar(&roda.pidMotor); // Zera o erro acumulado para não dar tranco
     }
     // manda duas mensagens de resposta, uma para cada roda, com os parâmetros atuais
     Mensagem resposta;
     resposta.tipo = COMANDO_PID;
     resposta.indice_destino = ID_TRANSMISSOR;
     resposta.indice_remetente = memoria.indice;
-    for (int i = 0; i < 2; i++)
+    for (int i = 0; i < NUMERO_RODAS; i++)
     {
       resposta.payload.pidconfig.roda = i;
-      resposta.payload.pidconfig.kp = pidMotor[i].kp;
-      resposta.payload.pidconfig.ki = pidMotor[i].ki;
-      resposta.payload.pidconfig.kd = pidMotor[i].kd;
-      resposta.payload.pidconfig.kf = pidMotor[i].kf;
-      esp_now_send(broadcastAddress, (uint8_t *)&resposta, sizeof(resposta));
+      resposta.payload.pidconfig.kp = rodas[i].pidMotor.kp;
+      resposta.payload.pidconfig.ki = rodas[i].pidMotor.ki;
+      resposta.payload.pidconfig.kd = rodas[i].pidMotor.kd;
+      resposta.payload.pidconfig.kf = rodas[i].pidMotor.kf;
+      esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&resposta, sizeof(resposta));
     }
     break;
   }
   case COMANDO_AUTOTUNE_PID:
   {
     periodo_ttl_ativo = false; // Desativa o TTL para não zerar os alvos durante o autotune
-    int i_roda = pacote.payload.autotune.roda;
-    autotune_iniciar(&tuneMotor[i_roda], pacote.payload.autotune.pwm_teste_max, pacote.payload.autotune.pwm_teste_min, pacote.payload.autotune.ciclos);
-    delta_ticks_target[i_roda] = pacote.payload.autotune.target_ticks; // Define o alvo de ticks para o autotune
-    calcular_motor[i_roda] = controle_autotune;                        // Muda a função
+    Roda roda = rodas[pacote.payload.autotune.roda];
+    autotune_iniciar(&roda.tuneMotor, pacote.payload.autotune.pwm_teste_max, pacote.payload.autotune.pwm_teste_min, pacote.payload.autotune.ciclos);
+    roda.delta_ticks_target = pacote.payload.autotune.target_ticks; // Define o alvo de ticks para o autotune
+    roda.calcular_motor = controle_autotune;                        // Muda a função
     break;
   }
   case COMANDO_SALVAR:
@@ -321,8 +330,8 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     {
       memoria.passo_maximo_pwm = pacote.payload.config_sistema.passo_maximo_pwm;
       memoria.periodo_ttl_ms = pacote.payload.config_sistema.periodo_ttl_ms;
-      for (int i = 0; i < 2; i++)
-        motor[i].passoMaximo = memoria.passo_maximo_pwm;
+      for (int i = 0; i < NUMERO_RODAS; i++)
+        rodas[i].motor.passoMaximo = memoria.passo_maximo_pwm;
       DEBUG_PRINTLN("Configurações Físicas atualizadas na RAM!");
     }
     // RETORNAR MSG
@@ -373,6 +382,7 @@ void setup()
     memoria.periodo_ttl_ms = 500;
     memoria.passo_maximo_pwm = 100;
     memoria.periodo_controle_ms = 20;
+    memoria.canal_wifi = 11;
 
     if (salvar_config(&memoria))
       DEBUG_PRINTLN("Dados salvos com sucesso!");
@@ -392,19 +402,19 @@ void setup()
   }
 
   // Configura os motores
-  motor[0] = criarMotor(PH_IN1, PH_IN2, memoria.passo_maximo_pwm);
-  motor[1] = criarMotor(PH_IN3, PH_IN4, memoria.passo_maximo_pwm);
+  rodas[DIR].motor = criarMotor(PH_IN1, PH_IN2, memoria.passo_maximo_pwm);
+  rodas[ESQ].motor = criarMotor(PH_IN3, PH_IN4, memoria.passo_maximo_pwm);
 
   // Configura os encoders e as interrupções
-  inicializarEncoder(&encoder[0], ENC0_PINA, ENC0_PINB);
-  inicializarEncoder(&encoder[1], ENC1_PINA, ENC1_PINB);
-  attachInterrupt(digitalPinToInterrupt(encoder[0].pinA), isr0, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(encoder[1].pinA), isr1, CHANGE);
+  inicializarEncoder(&rodas[DIR].encoder, ENC0_PINA, ENC0_PINB);
+  inicializarEncoder(&rodas[ESQ].encoder, ENC1_PINA, ENC1_PINB);
+  attachInterrupt(digitalPinToInterrupt(rodas[DIR].encoder.pinA), isr0, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(rodas[ESQ].encoder.pinA), isr1, CHANGE);
 
-  for (int i = 0; i < 2; i++)
+  for (int i = 0; i < NUMERO_RODAS; i++)
   {
-    pid_iniciar(&pidMotor[i], memoria.pid[i].kp, memoria.pid[i].ki, memoria.pid[i].kd, memoria.pid[i].kf, PID_MIN_PWM, PID_MAX_PWM);
-    calcular_motor[i] = controle_pid;
+    pid_iniciar(&rodas[i].pidMotor, memoria.pid[i].kp, memoria.pid[i].ki, memoria.pid[i].kd, memoria.pid[i].kf, PID_MIN_PWM, PID_MAX_PWM);
+    rodas[i].calcular_motor = controle_pid;
   }
 
   // Configura o Wi-Fi e o ESP-NOW
@@ -414,7 +424,7 @@ void setup()
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_start());
-  ESP_ERROR_CHECK(esp_wifi_set_channel(CANAL, WIFI_SECOND_CHAN_NONE));
+  ESP_ERROR_CHECK(esp_wifi_set_channel(memoria.canal_wifi, WIFI_SECOND_CHAN_NONE));
   ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
   ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(84));
   if (esp_now_init() != ESP_OK)
@@ -425,7 +435,7 @@ void setup()
   // adiciona o peer de broadcast para garantir que pode enviar respostas para o transmissor
   esp_now_peer_info_t peerInfo;
   memset(&peerInfo, 0, sizeof(peerInfo));
-  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  memcpy(peerInfo.peer_addr, BROADCAST_ADDRESS, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK)
   {
     DEBUG_PRINTLN("Falha ao adicionar o peer de broadcast");
@@ -434,8 +444,10 @@ void setup()
   periodo_ttl_ativo = true;
 
   // Incicializa os timers
-  millis_ttl = millis();
   millis_atual = millis();
+  millis_ttl = millis_atual;
+  millis_controle = millis_atual;
+  millis_telemetria = millis_atual;
   DEBUG_PRINTLN("Carrinho iniciado com sucesso!");
   // tocarSomMotor(&motor0, 8000, 500);
   // tocarSomMotor(&motor1, 8000, 500);
@@ -445,29 +457,28 @@ void loop()
 {
   unsigned long millis_atual = millis();
 
-  if (millis_atual - millis_atual > memoria.periodo_controle_ms)
+  if (millis_atual - millis_controle > memoria.periodo_controle_ms)
   {
+    millis_controle = millis_atual;
     // 1. Atualiza a leitura de Variação (Delta) do Encoder
-    for (int i = 0; i < 2; i++)
-      atualizarDeltaTicks(&encoder[i]);
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      atualizarDeltaTicks(&rodas[i].encoder);
 
     // 2. Calcula o PID ou Autotune
     float pwm_saida[2];
-    for (int i = 0; i < 2; i++)
-      pwm_saida[i] = calcular_motor[i](i, delta_ticks_target[i], encoder[i].delta_ticks);
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      pwm_saida[i] = rodas[i].calcular_motor(&rodas[i], rodas[i].delta_ticks_target, rodas[i].encoder.delta_ticks);
 
     // 3. Aplica nos motores (assumindo que a sua struct Motor ou biblioteca espera valor com sinal)
-    for (int i = 0; i < 2; i++)
-      moverMotor(&motor[i], (int)pwm_saida[i]);
-
-    millis_atual = millis_atual;
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      moverMotor(&rodas[i].motor, (int)pwm_saida[i]);
   }
 
   if (periodo_ttl_ativo && millis_atual - millis_ttl > memoria.periodo_ttl_ms)
   {
-    for (int i = 0; i < 2; i++)
-      delta_ticks_target[i] = 0;
     millis_ttl = millis_atual;
+    for (int i = 0; i < NUMERO_RODAS; i++)
+      rodas[i].delta_ticks_target = 0;
   }
 
   if (memoria.periodo_telemetria_ms != 0 && (millis_atual - millis_telemetria > memoria.periodo_telemetria_ms)) // Envia a cada intervalo_telemetria_ms ms
@@ -483,8 +494,8 @@ void loop()
     // Preenche os dados atuais (Delta dos Encoders) e os alvos (Target)
     for (int i = 0; i < 2; i++)
     {
-      msgTelemetria.payload.telemetria.delta_ticks_atual[i] = encoder[i].delta_ticks;
-      msgTelemetria.payload.telemetria.delta_ticks_target[i] = delta_ticks_target[i];
+      msgTelemetria.payload.telemetria.delta_ticks_atual[i] = rodas[i].encoder.delta_ticks;
+      msgTelemetria.payload.telemetria.delta_ticks_target[i] = rodas[i].delta_ticks_target;
     }
     msgTelemetria.payload.telemetria.rssi_carrinho = ultimo_rssi;
     msgTelemetria.payload.telemetria.noise_floor_carrinho = ultimo_noise_floor;
@@ -493,6 +504,6 @@ void loop()
     cnt_pacotes_totais = 0;
     cnt_pacotes_validos = 0;
     // Envia para o Transmissor
-    esp_now_send(broadcastAddress, (uint8_t *)&msgTelemetria, sizeof(msgTelemetria));
+    esp_now_send(BROADCAST_ADDRESS, (uint8_t *)&msgTelemetria, sizeof(msgTelemetria));
   }
 }
