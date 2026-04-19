@@ -267,6 +267,31 @@ void tratar_comando_telemetria(const Mensagem *pacote)
   }
 }
 
+bool pacote_eh_seguro(const Mensagem *pacote, const uint8_t *mac_remetente)
+{
+  // 1. O carrinho já deve ter concluído o processo de pareamento
+  if (!memoria.pareado)
+    return false;
+
+  // 2. O comando deve obrigatoriamente vir do transmissor reconhecido
+  if (pacote->indice_remetente != ID_TRANSMISSOR)
+    return false;
+
+  // 3. O destino precisa ser este carrinho específico ou um envio em massa (Broadcast)
+  if (pacote->indice_destino != memoria.indice && pacote->indice_destino != ID_BROADCAST)
+    return false;
+
+  // 4. Autenticação física: O MAC do remetente deve ser idêntico ao salvo na memória
+  for (int i = 0; i < 6; i++)
+  {
+    if (mac_remetente[i] != memoria.mac_esp_principal[i])
+      return false;
+  }
+
+  // Se sobreviveu a todas as validações, o pacote é legítimo
+  return true;
+}
+
 // Callback para receber mensagens via ESP-NOW
 void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
@@ -286,7 +311,7 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     // Compara a senha recebida com a senha hardcoded
     if (strncmp(pacote.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(pacote.payload.pareamento.senha)) == 0)
     {
-      cnt_pacotes_validos = cnt_pacotes_validos + 1;
+      cnt_pacotes_validos++;
 
       // Senha correta! Copia o MAC do remetente para a struct da memória (apenas na RAM)
       memcpy(memoria.mac_esp_principal, info_pacote->src_addr, 6);
@@ -312,32 +337,13 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   }
 
   // ---------------------------------------------------------
-  // 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS (MOVIMENTO)
+  // 2. FILTRO DE SEGURANÇA PARA COMANDOS COMUNS
   // ---------------------------------------------------------
-  // Se ainda não estiver pareado, ignora qualquer outro comando
-  if (!memoria.pareado)
-    return; // Se não estiver pareado, ignora qualquer comando que não seja de pareamento
 
-  if (pacote.indice_remetente != ID_TRANSMISSOR)
-    return; // Se o comando não veio do transmissor, ignora
+  if (!pacote_eh_seguro(&pacote, info_pacote->src_addr))
+    return;              // Early Return: Se não for seguro, descarta imediatamente sem processar
+  cnt_pacotes_validos++; // Se passou por tudo, é um pacote válido!
 
-  if (pacote.indice_destino != memoria.indice && pacote.indice_destino != ID_BROADCAST)
-    return; // Se o comando não for para mim nem para broadcast, ignora
-
-  // Verifica se o MAC de quem enviou é o mesmo que está salvo na memória
-  for (int i = 0; i < 6; i++)
-  {
-    if (info_pacote->src_addr[i] != memoria.mac_esp_principal[i])
-    {
-      return; // MAC não autorizado, ignora o pacote
-    }
-  }
-
-  cnt_pacotes_validos = cnt_pacotes_validos + 1; // Se passou por tudo, é um pacote válido!
-
-  // ---------------------------------------------------------
-  // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
-  // ---------------------------------------------------------
   // ---------------------------------------------------------
   // 3. EXECUÇÃO DOS COMANDOS AUTORIZADOS
   // ---------------------------------------------------------
