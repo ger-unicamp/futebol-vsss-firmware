@@ -193,6 +193,7 @@ class PonteESP32:
 
     def enviar_echo(self):
         # Apenas leitura (GET). Não precisa de payload.
+        self.timestamp_ultimo_echo = time.time() # Marca o tempo antes de enviar para medir o RTT depois
         self._enviar_mensagem('COMANDO_ID', self.defines.get('ID_BROADCAST', 255), False)
 
     def enviar_movimento(self, indice, vel_esq, vel_dir):
@@ -243,6 +244,7 @@ class PonteESP32:
             payload.config_sistema.tempo_ttl_ms = ttl
         self._enviar_mensagem('COMANDO_CONFIG_SISTEMA', robo_id, True, set_payload)
 
+
     def enviar_autotune(self, robo_id, roda, pwm_max, pwm_min, ciclos, target_ticks):
         # Ação/Gatilho. O "is_set" é ignorado pelo ESP32 (mando False por padrão).
         def set_payload(payload):
@@ -250,19 +252,23 @@ class PonteESP32:
             payload.autotune.pwm_teste_max = pwm_max
             payload.autotune.pwm_teste_min = pwm_min
             payload.autotune.ciclos = ciclos
-            payload.autotune.targert_ticks = target_ticks
+            payload.autotune.target_ticks = target_ticks
             
         self._enviar_mensagem('COMANDO_AUTOTUNE_PID', robo_id, False, set_payload)
 
+    def enviar_config_telemetria(self, robo_id, intervalo_ms):
+        """
+        Liga ou desliga a telemetria. 
+        intervalo_ms = 0 desliga.
+        """
+        def set_payload(payload):
+            payload.telemetria.intervalo = intervalo_ms
+        self._enviar_mensagem('COMANDO_TELEMETRIA', robo_id, True, set_payload)
+        status = f"em {intervalo_ms}ms" if intervalo_ms > 0 else "DESLIGADA"
+        print(f"[*] Solicitando Telemetria {status} para o Robô {robo_id}")
+
     def enviar_salvar(self, robo_id):
-        """Envia o comando para o robô salvar seus parâmetros atuais na memória flash."""
-        msg = self.criar_mensagem()
-        # Usa o valor 0x09 como fallback caso o parser não encontre
-        msg.tipo = self.enums.get('COMANDO_SALVAR', 0x09) 
-        msg.indice_destino = robo_id
-        
-        print(f"\n[--> SEND] Mandando Robô {robo_id} salvar configurações na Flash...")
-        self.enviar_mensagem(msg)
+        self._enviar_mensagem('COMANDO_SALVAR', robo_id, False)
 
     def _maquina_estados_rx(self):
         """Máquina de estados idêntica a do main.cpp, focada na recepção (RX)."""
@@ -275,6 +281,8 @@ class PonteESP32:
         tamanho_payload = 0
         buffer_payload = bytearray()
 
+
+        print("[*] Thread de RX iniciada em background!")
         while self.rodando:
             if self.serial.in_waiting > 0:
                 byte_lido = self.serial.read(1)[0]
@@ -300,6 +308,7 @@ class PonteESP32:
                 elif estado == ESTADO_READ_PAYLOAD:
                     buffer_payload.append(byte_lido)
                     if len(buffer_payload) >= tamanho_payload:
+                        # print(f"\n[RX DEBUG] Pacote RAW recebido ({tamanho_payload} bytes): {bytes(buffer_payload).hex()}")
                         # Passa os bytes brutos para o CFFI reconstruir a struct
                         self._processar_mensagem_recebida(bytes(buffer_payload))
                         estado = ESTADO_WAIT_SYNC1
@@ -313,7 +322,7 @@ class PonteESP32:
             msg = self.ffi.from_buffer("Mensagem *", raw_bytes)
             
             # Trata a resposta do comando de ECHO
-            if msg.tipo == self.enums.get('COMANDO_ECHO', 0x03):
+            if msg.tipo in (self.enums.get('COMANDO_ID'), self.enums.get('COMANDO_PAREAMENTO')):
                 # 1. Para o cronômetro e calcula o RTT em milissegundos
                 tempo_atual = time.time()
                 ping_ms = (tempo_atual - self.timestamp_ultimo_echo) * 1000.0
@@ -334,24 +343,39 @@ class PonteESP32:
                 print(f"[<-- RECV ECHO] MAC: {mac_str} | ID: {id_recebido} | RSSI: {rssi} dBm | Ping: {ping_ms:.1f} ms")
                 return
 
-            # 2. Trata comandos de Movimento (se houver alguma confirmação)
-            elif msg.tipo == self.enums.get('COMANDO_MOVIMENTO', 0x01):
-                print(f"\n[<-- RECV] Mensagem do Robô {msg.indice} | Tipo Comando: 0x{msg.tipo:02X}")
-                print(f"    Velocidade Esq: {msg.payload.movimento.vel_esq}")
-                print(f"    Velocidade Dir: {msg.payload.movimento.vel_dir}")
-
-
-            elif msg.tipo == self.enums.get('COMANDO_GET_PID', 0x07):
+            elif msg.tipo == self.enums.get('COMANDO_PID'):
                 cfg = msg.payload.pidconfig
                 print(f"\n[<-- RECV PID] Robô {msg.indice_remetente} | Roda {cfg.roda} | Kp: {cfg.kp:.3f}, Ki: {cfg.ki:.3f}, Kd: {cfg.kd:.3f}, Kf: {cfg.kf:.3f}")
 
-            elif msg.tipo == self.enums.get('COMANDO_PRINT', 0x08):
-                # Converte os bytes de volta para string, parando no primeiro caractere nulo (\0)
-                texto_raw = bytes(msg.payload.print.texto)
-                texto = texto_raw.split(b'\0')[0].decode('utf-8', errors='replace')
-                
-                print(f"\n[ROBÔ {msg.indice_remetente}]: {texto}")
-                print("vsss> ", end="", flush=True) # Devolve o prompt do terminal
+            # --- 2. RECEBIMENTO DO PRINT (MENSAGENS DE TEXTO) ---
+            elif msg.tipo == self.enums.get('COMANDO_PRINT'):
+                # Pega a mensagem inteira como bytes crus e pula os 4 bytes do cabeçalho
+                raw_bytes = bytes(self.ffi.buffer(msg))[4:]
+            
+                # Corta a string no primeiro '\x00' (Null Byte) e transforma em texto
+                texto = raw_bytes.split(b'\x00')[0].decode('utf-8', errors='ignore')
+            
+                print(f"\n[ROBÔ {msg.indice_remetente} LOG]: {texto}")
+
+            elif msg.tipo == self.enums.get('COMANDO_MOVIMENTO'):
+                # O CFFI já converte os int16_t do C para inteiros normais no Python!
+                vel_esq = msg.payload.movimento.vel_esq
+                vel_dir = msg.payload.movimento.vel_dir
+            
+                # Avisa se é um retorno de estado (is_set falso) ou um espelho de comando enviado
+                tipo_acao = "Feedback Atual" if not msg.is_set else "Comando Espelhado"
+            
+                print(f"\n[ROBÔ {msg.indice_remetente} MOVIMENTO] {tipo_acao} -> Roda Esq: {vel_esq} | Roda Dir: {vel_dir}")
+
+            elif msg.tipo == self.enums.get('COMANDO_TELEMETRIA'):
+                esq_atual = msg.payload.telemetria.vel_esq_atual
+                dir_atual = msg.payload.telemetria.vel_dir_atual
+                esq_target = msg.payload.telemetria.vel_esq_target
+                dir_target = msg.payload.telemetria.vel_dir_target
+            
+                print(f"[ROBÔ {msg.indice_remetente} TELEMETRIA] Esq: {esq_atual}/{esq_target} | Dir: {dir_atual}/{dir_target}")
+            else:
+                print(f"\n[<-- RECV] Mensagem do Robô {msg.indice_remetente} | Tipo Comando: 0x{msg.tipo:02X} | Payload bruto: {raw_bytes.hex()}")
 
             
                 
@@ -405,7 +429,7 @@ if __name__ == "__main__":
     print(" - parear")
     print(" - get_pid <robo_id> <roda_0_ou_1>")
     print(" - set_pid <robo_id> <roda> <kp> <ki> <kd>")
-    print(" - autotune <robo_id> <roda> <pwm_teste>")
+    print(" - autotune <robo_id> <roda> <pwm_max> <pwm_min> <ciclos> <target_ticks>")
     print(" - salvar <robo_id>") # Nova linha
     print(" - sair")
     print("="*40 + "\n")
@@ -437,18 +461,32 @@ if __name__ == "__main__":
                 else:
                     print("Uso: set_pid <robo_id> <roda> <kp> <ki> <kd>")
             elif cmd == "autotune":
-                if len(comando_raw) >= 4:
-                    robo, roda, pwm = map(float, comando_raw[1:4])
-                    esp.enviar_autotune(int(robo), int(roda), pwm)
-                    print(f"[*] Iniciando Autotune na roda {int(roda)} com PWM {pwm}.")
+                if len(comando_raw) >= 7:
+                    robo = int(comando_raw[1])
+                    roda = int(comando_raw[2])
+                    pwm_max = float(comando_raw[3])
+                    pwm_min = float(comando_raw[4])
+                    ciclos = int(comando_raw[5])
+                    target_ticks = int(comando_raw[6])
+                    
+                    esp.enviar_autotune(robo, roda, pwm_max, pwm_min, ciclos, target_ticks)
+                    print(f"[*] Iniciando Autotune na roda {roda} com PWM máximo {pwm_max}, mínimo {pwm_min}, {ciclos} ciclos e target de ticks {target_ticks}.")
                 else:
-                    print("Uso: autotune <robo_id> <roda> <pwm_teste>")
+                    print("Uso: autotune <robo_id> <roda> <pwm_max> <pwm_min> <ciclos> <target_ticks>")
             elif cmd == "salvar":
                 if len(comando_raw) >= 2:
                     robo_id = int(comando_raw[1])
                     esp.enviar_salvar(robo_id)
+                    print(f"[*] Mandando Robô {robo_id} salvar configurações na Flash...")
                 else:
                     print("Uso: salvar <robo_id>")
+            elif cmd == "telemetria":
+                if len(comando_raw) >= 3:
+                    robo_id = int(comando_raw[1])
+                    ms = int(comando_raw[2])
+                    esp.enviar_config_telemetria(robo_id, ms)
+                else:
+                    print("Uso: telemetria <id_robo> <intervalo_ms (0 para desligar)>")
             else:
                 print(f"Comando desconhecido: {cmd}")
 
@@ -456,3 +494,4 @@ if __name__ == "__main__":
         print("\nSaindo...")
     finally:
         esp.fechar()
+        print("\nTerminal encerrado e porta fechada com segurança.")

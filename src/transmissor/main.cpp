@@ -61,13 +61,13 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
   else
   {
     // Se for outro comando (ex: resposta de telemetria), valida a segurança
-    if (id == 0 || id > MAX_ROBOS || !robo_online[id])
+    if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
       return;
 
     for (int i = 0; i < 6; i++)
     {
-      if (info_pacote->src_addr[i] != mac_robos[id][i])
-        return; // Desconhecido fingindo ser o robô!
+      if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255) // Se o MAC não bater com o que temos registrado para aquele ID (e não for broadcast), ignora
+        return;                                                      // Desconhecido fingindo ser o robô!
     }
   }
 
@@ -110,6 +110,7 @@ void setup()
   pinMode(LED, OUTPUT);
   digitalWrite(LED, LOW);
 
+  Serial.println("Tamanho da mensagem: " + String(sizeof(Mensagem)) + " bytes");
   Serial.println("Transmissor iniciado com sucesso!");
 }
 

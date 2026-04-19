@@ -19,6 +19,7 @@ enum TipoComando : uint8_t
   COMANDO_PRINT = 0x07,
   COMANDO_SALVAR = 0x08,
   COMANDO_CONFIG_SISTEMA = 0x09,
+  COMANDO_TELEMETRIA = 0x0A,
 };
 
 typedef struct __attribute__((packed)) Mensagem
@@ -26,7 +27,7 @@ typedef struct __attribute__((packed)) Mensagem
   uint8_t tipo;             // O código do TipoComando (1 byte)
   uint8_t indice_destino;   // Indice do carrinho (1 byte)
   uint8_t indice_remetente; // Indice do carrinho remetente, útil para respostas e comandos globais (1 byte)
-  bool is_set;
+  uint8_t is_set;
 
   union Payload
   {
@@ -66,7 +67,7 @@ typedef struct __attribute__((packed)) Mensagem
       float pwm_teste_max;
       float pwm_teste_min;
       int ciclos;
-      int targert_ticks;
+      int target_ticks;
     } autotune;
 
     struct __attribute__((packed))
@@ -80,7 +81,7 @@ typedef struct __attribute__((packed)) Mensagem
 
     struct __attribute__((packed))
     {
-      char texto[64];
+      char texto[24]; // para nao aumentar o tamnho da mensagem, limitamos a 24 chars
     } print;
 
     struct __attribute__((packed))
@@ -89,6 +90,15 @@ typedef struct __attribute__((packed)) Mensagem
       int intervalo_rampa_ms;
       uint32_t tempo_ttl_ms;
     } config_sistema;
+
+    struct __attribute__((packed))
+    {
+      uint16_t intervalo;
+      int16_t vel_esq_atual;
+      int16_t vel_dir_atual;
+      int16_t vel_esq_target;
+      int16_t vel_dir_target;
+    } telemetria;
 
   } payload;
 } Mensagem;

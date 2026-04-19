@@ -51,6 +51,7 @@ esp_now_peer_info_t peerInfo;
 
 // Variáveis de controle TIME TO LIVE (TTL) para os comandos de movimento
 uint32_t tempo_ttl_ms = 500; // Tempo de vida do comando em ms (TTL)
+unsigned long millis_ttl = 0;
 bool ttl_ativo = false;
 
 // Criar as instâncias dos Motores
@@ -60,9 +61,11 @@ Encoder encoder0 = {0};
 Encoder encoder1 = {0};
 Mensagem msg;
 bool pareado = false;
-unsigned long millis_ttl = 0;
 unsigned long millis_att = 0;
 DadosConfig memoria;
+
+unsigned long millis_telemetria = 0;
+uint32_t intervalo_telemetria_ms = 0; // 0 -> desativado
 
 // Prototipação das funções de controle (PID e Autotune)
 CRIAR_ISR_ENCODER(isr0, encoder0)
@@ -132,6 +135,10 @@ float controle_autotune_m0(float setpoint, float medido)
     msgFim.payload.pidconfig.ki = pidMotor0.ki;
     msgFim.payload.pidconfig.kd = pidMotor0.kd;
     msgFim.payload.pidconfig.kf = pidMotor0.kf;
+    memoria.pid0.kp = pidMotor0.kp;
+    memoria.pid0.ki = pidMotor0.ki;
+    memoria.pid0.kd = pidMotor0.kd;
+    memoria.pid0.kf = pidMotor0.kf;
     esp_now_send(broadcastAddress, (uint8_t *)&msgFim, sizeof(msgFim));
   }
 
@@ -166,6 +173,10 @@ float controle_autotune_m1(float setpoint, float medido)
     msgFim.payload.pidconfig.ki = pidMotor1.ki;
     msgFim.payload.pidconfig.kd = pidMotor1.kd;
     msgFim.payload.pidconfig.kf = pidMotor1.kf;
+    memoria.pid1.kp = pidMotor1.kp;
+    memoria.pid1.ki = pidMotor1.ki;
+    memoria.pid1.kd = pidMotor1.kd;
+    memoria.pid1.kf = pidMotor1.kf;
     esp_now_send(broadcastAddress, (uint8_t *)&msgFim, sizeof(msgFim));
   }
 
@@ -340,13 +351,13 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
     if (pacote.payload.pidconfig.roda == 0)
     {
       autotune_iniciar(&tuneMotor0, pacote.payload.autotune.pwm_teste_max, pacote.payload.autotune.pwm_teste_min, pacote.payload.autotune.ciclos);
-      target_ticks_0 = pacote.payload.autotune.targert_ticks; // Define o alvo de ticks para o autotune
+      target_ticks_0 = pacote.payload.autotune.target_ticks; // Define o alvo de ticks para o autotune
       calcular_motor0 = controle_autotune_m0;
     }
     else
     {
       autotune_iniciar(&tuneMotor1, pacote.payload.autotune.pwm_teste_max, pacote.payload.autotune.pwm_teste_min, pacote.payload.autotune.ciclos);
-      target_ticks_1 = pacote.payload.autotune.targert_ticks; // Define o alvo de ticks para o autotune
+      target_ticks_1 = pacote.payload.autotune.target_ticks; // Define o alvo de ticks para o autotune
       calcular_motor1 = controle_autotune_m1;
     }
     break;
@@ -382,6 +393,22 @@ void OnDataRecv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, in
       DEBUG_PRINTLN("Configurações Físicas atualizadas na RAM!");
     }
     // RETORNAR MSG
+    break;
+  }
+  case COMANDO_TELEMETRIA:
+  {
+    if (msg.is_set)
+    {
+      intervalo_telemetria_ms = msg.payload.telemetria.intervalo;
+      if (intervalo_telemetria_ms > 0)
+      {
+        esp_print("Tele:on %dms", intervalo_telemetria_ms);
+      }
+      else
+      {
+        esp_print("Tele:off");
+      }
+    }
     break;
   }
   }
@@ -437,15 +464,9 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(encoder0.pinA), isr0, CHANGE);
   attachInterrupt(digitalPinToInterrupt(encoder1.pinA), isr1, CHANGE);
 
-  // Limites do PWM: no header Motor.h
   // Configura com os valores guardados na memoria
   pid_iniciar(&pidMotor0, memoria.pid0.kp, memoria.pid0.ki, memoria.pid0.kd, memoria.pid0.kf, PID_MIN_PWM, PID_MAX_PWM);
   pid_iniciar(&pidMotor1, memoria.pid1.kp, memoria.pid1.ki, memoria.pid1.kd, memoria.pid1.kf, PID_MIN_PWM, PID_MAX_PWM);
-  // pid_iniciar(&pidMotor0, 10.0f, 0.8f, 0.01f, 5.0f, PID_MIN_PWM, PID_MAX_PWM);
-  // pid_iniciar(&pidMotor1, 10.0f, 0.8f, 0.01f, 5.0f, PID_MIN_PWM, PID_MAX_PWM);
-  // pid_iniciar(&pidMotor0, 30.0f, 0.8f, 0.01f, 10.0f, PID_MIN_PWM, PID_MAX_PWM);
-  // pid_iniciar(&pidMotor1, 30.0f, 0.8f, 0.01f, 10.0f, PID_MIN_PWM, PID_MAX_PWM);
-
   calcular_motor0 = controle_pid_m0;
   calcular_motor1 = controle_pid_m1;
 
@@ -509,5 +530,25 @@ void loop()
     target_ticks_0 = 0;
     target_ticks_1 = 0;
     millis_ttl = millis_atual;
+  }
+
+  if (intervalo_telemetria_ms != 0 && (millis_atual - millis_telemetria > intervalo_telemetria_ms)) // Envia a cada intervalo_telemetria_ms ms
+  {
+    millis_telemetria = millis_atual;
+
+    Mensagem msgTelemetria;
+    msgTelemetria.tipo = COMANDO_TELEMETRIA;
+    msgTelemetria.indice_destino = ID_TRANSMISSOR;
+    msgTelemetria.indice_remetente = memoria.indice; // Ou seu ID local
+    msgTelemetria.is_set = true;
+
+    // Preenche os dados atuais (Delta dos Encoders) e os alvos (Target)
+    msgTelemetria.payload.telemetria.vel_esq_atual = encoder0.delta_ticks;
+    msgTelemetria.payload.telemetria.vel_dir_atual = encoder1.delta_ticks;
+    msgTelemetria.payload.telemetria.vel_esq_target = target_ticks_0;
+    msgTelemetria.payload.telemetria.vel_dir_target = target_ticks_1;
+
+    // Envia para o Transmissor
+    esp_now_send(broadcastAddress, (uint8_t *)&msgTelemetria, sizeof(msgTelemetria));
   }
 }
