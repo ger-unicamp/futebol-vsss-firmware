@@ -24,7 +24,7 @@ def localizar_transmissor(vid=0x303a, pid=0x1001):
     return None
 
 class PonteESP32:
-    def __init__(self, porta, baudrate, header_path):
+    def __init__(self, porta=None, baudrate=115200, header_path=None):
         # --- DESCOBERTA AUTOMÁTICA DO HEADER ---
         if header_path is None:
             # Pega a pasta onde este arquivo (mensagem.py) está
