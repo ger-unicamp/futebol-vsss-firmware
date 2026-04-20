@@ -46,14 +46,14 @@ uint8_t indice_buffer = 0;
 uint32_t ultimo_byte_rx_tempo = 0;
 const uint32_t TIMEOUT_SERIAL_MS = 50;
 
-volatile robo_confiavel_t lista_confianca[MAX_ROBOS] = {0};
+volatile robo_confiavel_t lista_confianca[TAMANHO_VETOR_ROBOS] = {0};
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 // Busca linear com otimização de comparação reversa (MAC[5] -> MAC[0])
 int buscar_mac(const uint8_t *mac_alvo)
 {
-  for (int i = 0; i < MAX_ROBOS; i++)
+  for (int i = 0; i < TAMANHO_VETOR_ROBOS; i++)
   {
     if (!lista_confianca[i].ativo)
       continue; // Pula slots vazios
@@ -85,7 +85,7 @@ void registrar_mac(const uint8_t *mac)
   uint32_t mais_antigo = 0xFFFFFFFF;
 
   // Varre a lista procurando um buraco ou o mais antigo
-  for (int i = 0; i < MAX_ROBOS; i++)
+  for (int i = 0; i < TAMANHO_VETOR_ROBOS; i++)
   {
     if (!lista_confianca[i].ativo)
     {

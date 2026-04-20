@@ -142,7 +142,7 @@ void tratar_comando_movimento(const mensagem_t *pacote)
 
 void tratar_comando_movimento_global(const mensagem_t *pacote)
 {
-  if (memoria.indice < MAX_ROBOS)
+  if (memoria.indice < TAMANHO_VETOR_ROBOS)
   {
     for (int i = 0; i < NUMERO_RODAS; i++)
       rodas[i].delta_ticks_target = pacote->payload.movimento_global.target_ticks[i][memoria.indice];

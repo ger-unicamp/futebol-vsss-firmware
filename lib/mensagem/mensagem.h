@@ -2,6 +2,7 @@
 #include <Arduino.h>
 
 #define MAX_ROBOS 6
+#define TAMANHO_VETOR_ROBOS MAX_ROBOS + 1 // indice 0 é transmissor
 #define SENHA_PAREAMENTO "GERVSSS"
 #define ID_TRANSMISSOR 0
 #define ID_BROADCAST 255
@@ -36,7 +37,7 @@ typedef struct __attribute__((packed)) mensagem_t
 
     struct __attribute__((packed))
     {
-      int16_t target_ticks[2][MAX_ROBOS];
+      int16_t target_ticks[2][TAMANHO_VETOR_ROBOS];
     } movimento_global;
 
     struct __attribute__((packed))
