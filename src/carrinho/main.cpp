@@ -314,7 +314,7 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
       // Responde ao Python
       mensagem_t msg = {0};
       msg.tipo = COMANDO_PAREAMENTO;
-      memcpy(msg.payload.pareamento.senha, SENHA_PAREAMENTO, 6);
+      memcpy(msg.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(msg.payload.pareamento.senha));
       memcpy(msg.payload.pareamento.mac, meu_mac, 6);
       DEBUG_PRINTF("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
                    msg.payload.pareamento.mac[0], msg.payload.pareamento.mac[1],

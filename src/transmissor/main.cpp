@@ -26,6 +26,13 @@ typedef enum
   STATE_READ_PAYLOAD
 } estado_serial_t;
 
+typedef struct
+{
+  uint8_t mac[6];
+  bool ativo;
+  uint32_t ultimo_contato;
+} robo_confiavel_t;
+
 // Fila para mensagens que chegam do rádio e devem ir para o PC
 static QueueHandle_t fila_rx_pc;
 
@@ -39,11 +46,68 @@ uint8_t indice_buffer = 0;
 uint32_t ultimo_byte_rx_tempo = 0;
 const uint32_t TIMEOUT_SERIAL_MS = 50;
 
-// Tabelas de Registo
-volatile uint8_t mac_robos[MAX_ROBOS + 1][6];       // Guarda os MACs (Índices 1 a MAX_ROBOS)
-volatile bool robo_online[MAX_ROBOS + 1] = {false}; // Status de conexão
+volatile robo_confiavel_t lista_confianca[MAX_ROBOS] = {0};
 
 uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Busca linear com otimização de comparação reversa (MAC[5] -> MAC[0])
+int buscar_mac(const uint8_t *mac_alvo)
+{
+  for (int i = 0; i < MAX_ROBOS; i++)
+  {
+    if (!lista_confianca[i].ativo)
+      continue; // Pula slots vazios
+
+    bool bateu = true;
+    // Compara de trás para frente para falhar o mais rápido possível (OUI da Espressif é igual no início)
+    for (int j = 5; j >= 0; j--)
+    {
+      if (lista_confianca[i].mac[j] != mac_alvo[j])
+      {
+        bateu = false;
+        break; // Não é esse carrinho, sai do loop interno
+      }
+    }
+
+    if (bateu)
+      return i; // Achou! Retorna o índice
+  }
+  return -1; // Não encontrou em nenhum slot
+}
+
+// Registro com substituição por LRU (Menos Recentemente Usado)
+void registrar_mac(const uint8_t *mac)
+{
+  if (buscar_mac(mac) != -1)
+    return; // Já é confiável, não faz nada
+
+  int pos_alvo = -1;
+  uint32_t mais_antigo = 0xFFFFFFFF;
+
+  // Varre a lista procurando um buraco ou o mais antigo
+  for (int i = 0; i < MAX_ROBOS; i++)
+  {
+    if (!lista_confianca[i].ativo)
+    {
+      pos_alvo = i;
+      break; // Achou espaço vazio, prioridade máxima, para a busca
+    }
+    // Se está ativo, verifica se é o contato mais velho até agora
+    if (lista_confianca[i].ultimo_contato < mais_antigo)
+    {
+      mais_antigo = lista_confianca[i].ultimo_contato;
+      pos_alvo = i;
+    }
+  }
+
+  // Copia os 6 bytes do MAC para a posição alvo
+  for (int j = 0; j < 6; j++)
+  {
+    lista_confianca[pos_alvo].mac[j] = mac[j];
+  }
+  lista_confianca[pos_alvo].ativo = true;
+  lista_confianca[pos_alvo].ultimo_contato = millis();
+}
 
 void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
@@ -62,34 +126,22 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
   // 1. Lógica de Pareamento
   if (pacote.tipo == COMANDO_PAREAMENTO)
   {
-    if (pacote.payload.pareamento.senha == SENHA_PAREAMENTO)
-    {
-      if (id > 0 && id <= MAX_ROBOS)
-      {
-        for (int i = 0; i < 6; i++)
-        {
-          mac_robos[id][i] = info_pacote->src_addr[i];
-        }
-        robo_online[id] = true;
-      }
-    }
+    if (strncmp(pacote.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(pacote.payload.pareamento.senha)) == 0)
+      registrar_mac(info_pacote->src_addr); // Confiança estabelecida!
     else
-    {
       return; // Senha errada, ignora o intruso sumariamente!
-    }
   }
   // 2. Lógica de Comandos Normais (Validação estrita)
   else
   {
-    if (id == 0 || (id > MAX_ROBOS && id != 255) || !robo_online[id])
-      return;
-
-    // Valida se o MAC que está a enviar o comando bate com o MAC registado
-    for (int i = 0; i < 6; i++)
+    int pos = buscar_mac(info_pacote->src_addr);
+    if (pos == -1)
     {
-      if (info_pacote->src_addr[i] != mac_robos[id][i] && id != 255)
-        return; // Desconhecido a fingir ser o robô!
+      return; // Desconhecido fingindo ser o robô!
     }
+
+    // É de confiança. Atualiza o relógio de sobrevivência na tabela
+    lista_confianca[pos].ultimo_contato = millis();
   }
 
   if (pacote.tipo == COMANDO_TELEMETRIA)
