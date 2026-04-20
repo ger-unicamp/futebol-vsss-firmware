@@ -197,6 +197,7 @@ void setup()
 
   Serial.println("Tamanho da mensagem: " + String(sizeof(mensagem_t)) + " bytes");
   Serial.println("Transmissor iniciado com sucesso!");
+  // Envio de pareamento automático para popular a lista de robos
 }
 
 void loop()

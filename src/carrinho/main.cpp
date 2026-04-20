@@ -473,6 +473,10 @@ void setup()
   millis_controle = millis_atual;
   millis_telemetria = millis_atual;
   DEBUG_PRINTF("Carrinho iniciado com sucesso!\n");
+  if (memoria.pareado)
+  {
+    // manda mensagem para parear se apresentando ao transmissor
+  }
 }
 
 void loop()
