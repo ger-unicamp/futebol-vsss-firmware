@@ -48,8 +48,6 @@ volatile int8_t ultimo_noise_floor;
 volatile uint32_t cnt_pacotes_totais;
 volatile uint32_t cnt_pacotes_validos;
 
-// Variável para ativar/desativar o envio de logs via ESP-NOW
-bool esp_print_ativo = true;
 // Variáveis de controle de Tasks
 volatile bool periodo_ttl_ativo;
 uint32_t millis_atual;
@@ -75,27 +73,6 @@ roda_t rodas[NUMERO_RODAS];
 CRIAR_ISR_ENCODER(isr0, rodas[DIR].encoder)
 CRIAR_ISR_ENCODER(isr1, rodas[ESQ].encoder)
 
-// Função para enviar mensagens de texto de debug formatadas para o Python via ESP-NOW
-void espnow_printf(const char *formato, ...)
-{
-  mensagem_t msg = {0};
-  msg.tipo = COMANDO_PRINT;
-
-  // 1. Formata a string (como um printf) diretamente dentro do payload da mensagem
-  va_list args;
-  va_start(args, formato);
-  vsnprintf(msg.payload.print.texto, sizeof(msg.payload.print.texto), formato, args);
-  va_end(args);
-
-  // 2. Sempre imprime na porta Serial (se o DEBUG_ENABLE estiver ativado)
-  // Nota: o formato não recebe "\n" automático aqui para manter o comportamento exato do printf
-  DEBUG_PRINTF("%s", msg.payload.print.texto);
-
-  // 3. Envia via ESP-NOW apenas se o print de rede estiver ativado e o carrinho pareado
-  if (esp_print_ativo && memoria.pareado)
-    despachante_enfileirar(msg);
-}
-
 float controle_pid(roda_t *roda, float setpoint, float medido)
 {
   return pid_computar(&roda->pid_motor, setpoint, medido);
@@ -108,7 +85,7 @@ float controle_autotune(roda_t *roda, float setpoint, float medido)
   // Se o autotune acabou nesta iteração:
   if (!roda->tune_motor.ativo)
   {
-    espnow_printf("tune m%d feito!\n", roda->indice_roda);
+    despachante_printf("tune m%d feito!\n", roda->indice_roda);
 
     // 1. Devolve o controle para o PID normal!
     roda->calcular_motor = controle_pid;
@@ -119,14 +96,7 @@ float controle_autotune(roda_t *roda, float setpoint, float medido)
     memoria.pid[roda->indice_roda].kf = roda->pid_motor.kf;
 
     // 2. Envia a mensagem de aviso para o Python
-    mensagem_t msg = {0};
-    msg.tipo = COMANDO_PID;
-    msg.payload.pid_config.roda = roda->indice_roda;
-    msg.payload.pid_config.kp = roda->pid_motor.kp;
-    msg.payload.pid_config.ki = roda->pid_motor.ki;
-    msg.payload.pid_config.kd = roda->pid_motor.kd;
-    msg.payload.pid_config.kf = roda->pid_motor.kf;
-    despachante_enfileirar(msg);
+    despachante_printf("result tune r%d kp%.2f ki%.2f kd%.2f kf%.2f\n", roda->indice_roda, roda->pid_motor.kp, roda->pid_motor.ki, roda->pid_motor.kd, roda->pid_motor.kf);
   }
 
   return pwm;
@@ -153,35 +123,26 @@ void tratar_comando_movimento_global(const mensagem_t *pacote)
 
 void tratar_comando_id(const mensagem_t *pacote, const esp_now_recv_info_t *info_pacote)
 {
-  if (pacote->is_set)
+  bool mac_eh_meu = true;
+  for (int i = 0; i < 6; i++)
   {
-    bool mac_eh_meu = true;
-    for (int i = 0; i < 6; i++)
+    if (pacote->payload.set_id.mac_alvo[i] != meu_mac[i])
     {
-      if (pacote->payload.set_id.mac_alvo[i] != meu_mac[i])
-      {
-        mac_eh_meu = false;
-        break;
-      }
-    }
-    if (mac_eh_meu)
-    {
-      memoria.indice = pacote->payload.set_id.novo_id;
+      mac_eh_meu = false;
+      break;
     }
   }
-
-  mensagem_t msg = {0};
-  msg.tipo = COMANDO_ID;
-  msg.payload.echo.rssi = info_pacote->rx_ctrl->rssi;
-  memcpy(msg.payload.echo.mac, meu_mac, 6);
-  despachante_enfileirar(msg);
+  if (mac_eh_meu)
+  {
+    memoria.indice = pacote->payload.set_id.novo_id;
+  }
 }
 
 void tratar_comando_pid(const mensagem_t *pacote)
 {
-  if (pacote->is_set)
+  int i_roda = pacote->payload.pid_config.roda;
+  if (pacote->payload.pid_config.is_set)
   {
-    int i_roda = pacote->payload.pid_config.roda;
     if (i_roda >= NUMERO_RODAS)
       return; // Proteção contra estouro de memória!
 
@@ -198,18 +159,7 @@ void tratar_comando_pid(const mensagem_t *pacote)
     roda->pid_motor.kf = memoria.pid[i_roda].kf;
     pid_resetar(&roda->pid_motor);
   }
-
-  mensagem_t msg = {0};
-  msg.tipo = COMANDO_PID;
-  for (int i = 0; i < NUMERO_RODAS; i++)
-  {
-    msg.payload.pid_config.roda = i;
-    msg.payload.pid_config.kp = rodas[i].pid_motor.kp;
-    msg.payload.pid_config.ki = rodas[i].pid_motor.ki;
-    msg.payload.pid_config.kd = rodas[i].pid_motor.kd;
-    msg.payload.pid_config.kf = rodas[i].pid_motor.kf;
-    despachante_enfileirar(msg);
-  }
+  despachante_printf("pid r%d kp%.2f ki%.2f kd%.2f kf%.2f\n", i_roda, rodas[i_roda].pid_motor.kp, rodas[i_roda].pid_motor.ki, rodas[i_roda].pid_motor.kd, rodas[i_roda].pid_motor.kf);
 }
 
 void tratar_comando_autotune_pid(const mensagem_t *pacote)
@@ -222,39 +172,51 @@ void tratar_comando_autotune_pid(const mensagem_t *pacote)
   autotune_iniciar(&roda->tune_motor, pacote->payload.autotune.pwm_teste_max, pacote->payload.autotune.pwm_teste_min, pacote->payload.autotune.ciclos);
   roda->delta_ticks_target = pacote->payload.autotune.target_ticks;
   roda->calcular_motor = controle_autotune;
+  despachante_printf("autotune r%u pmx%.2f pmn%.2f c%u tt%d\n", pacote->payload.autotune.roda, pacote->payload.autotune.pwm_teste_max, pacote->payload.autotune.pwm_teste_min, pacote->payload.autotune.ciclos, pacote->payload.autotune.target_ticks);
 }
 
 void tratar_comando_salvar()
 {
   if (salvar_config(&memoria))
-    espnow_printf("Salvo!\n");
+    despachante_printf("Salvo!\n");
   else
-    espnow_printf("Erro na Flash.\n");
+    despachante_printf("Erro na Flash.\n");
 }
 
-void tratar_comando_config_sistema(const mensagem_t *pacote)
+void tratar_comando_config(const mensagem_t *pacote)
 {
-  if (pacote->is_set)
+  if (pacote->payload.config_sistema.is_set)
   {
     memoria.passo_maximo_pwm = pacote->payload.config_sistema.passo_maximo_pwm;
+    memoria.periodo_telemetria_ms = pacote->payload.config_sistema.periodo_telemetria_ms;
     memoria.periodo_ttl_ms = pacote->payload.config_sistema.periodo_ttl_ms;
+    memoria.periodo_controle_ms = pacote->payload.config_sistema.periodo_controle_ms;
+
+    // Atualiza os motores com o novo passo do PWM
     for (int i = 0; i < NUMERO_RODAS; i++)
     {
       rodas[i].motor.passo_maximo_pwm = memoria.passo_maximo_pwm;
     }
-    espnow_printf("Recebido.\n");
   }
+
+  // Isso atua como uma confirmação de recebimento ou como uma simples requisição de leitura (Get).
+  despachante_printf("cfg_sys pwm_passo:%u tele_ms:%u ttl_ms:%u ctrl_ms:%u\n",
+                     memoria.passo_maximo_pwm,
+                     memoria.periodo_telemetria_ms,
+                     memoria.periodo_ttl_ms,
+                     memoria.periodo_controle_ms);
 }
 
 void tratar_comando_telemetria(const mensagem_t *pacote)
 {
-  if (pacote->is_set)
+  if (memoria.indice != 255)
   {
-    memoria.periodo_telemetria_ms = pacote->payload.telemetria.periodo_telemetria_ms;
-    if (memoria.periodo_telemetria_ms > 0)
-      espnow_printf("Tele:on %u ms\n", memoria.periodo_telemetria_ms);
-    else
-      espnow_printf("Tele:off\n");
+    // sync do envio da telemetria
+    millis_telemetria = millis() - ((uint16_t)(memoria.periodo_telemetria_ms / MAX_ROBOS) * (memoria.indice - 1));
+  }
+  else
+  {
+    millis_telemetria = millis() - ((uint16_t)(memoria.periodo_telemetria_ms / MAX_ROBOS) * (random(0, MAX_ROBOS)));
   }
 }
 
@@ -286,11 +248,13 @@ bool pacote_eh_seguro(const mensagem_t *pacote, const uint8_t *mac_remetente)
 // Callback para receber mensagens via ESP-NOW
 void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, int tamanho)
 {
+  DEBUG_PRINTF("recebi msg\n");
   cnt_pacotes_totais = cnt_pacotes_totais + 1;
   // Verificação básica de tamanho
   if (tamanho != sizeof(mensagem_t))
     return; // tamanho inesperado, ignora o pacote
 
+  DEBUG_PRINTF("recebi passou na verificacao de tamanho\n");
   mensagem_t pacote;
   memcpy(&pacote, dados, sizeof(pacote));
 
@@ -299,6 +263,7 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
   // ---------------------------------------------------------
   if (pacote.tipo == COMANDO_PAREAMENTO && pacote.indice_remetente == ID_TRANSMISSOR)
   {
+    DEBUG_PRINTF("eh pareamento e veio do transmissor\n");
     // Compara a senha recebida com a senha hardcoded
     if (strncmp(pacote.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(pacote.payload.pareamento.senha)) == 0)
     {
@@ -309,7 +274,7 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
 
       // Habilita a comunicação sem gastar a memória Flash
       memoria.pareado = true;
-      espnow_printf("Pareado. use SALVAR.\n");
+      despachante_printf("Pareado. use SALVAR.\n");
 
       // Responde ao Python
       mensagem_t msg = {0};
@@ -369,8 +334,8 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
     tratar_comando_salvar();
     break;
 
-  case COMANDO_CONFIG_SISTEMA:
-    tratar_comando_config_sistema(&pacote);
+  case COMANDO_CONFIG:
+    tratar_comando_config(&pacote);
     break;
 
   case COMANDO_TELEMETRIA:
@@ -382,7 +347,7 @@ void on_data_recv(const esp_now_recv_info_t *info_pacote, const uint8_t *dados, 
 void setup()
 {
   DEBUG_BEGIN(115200);
-  delay(500);
+  delay(300);
   DEBUG_PRINTF("A inicializar o carrinho...\n");
 
   // Inicia a memória e tenta carregar o MAC do rádio principal para pareamento automático
@@ -401,6 +366,7 @@ void setup()
     memoria.periodo_ttl_ms = 500;
     memoria.passo_maximo_pwm = 100;
     memoria.periodo_controle_ms = 20;
+    memoria.periodo_telemetria_ms = 1000 + random(0, 500);
     memoria.canal_wifi = 11;
 
     if (salvar_config(&memoria))
@@ -473,9 +439,25 @@ void setup()
   millis_controle = millis_atual;
   millis_telemetria = millis_atual;
   DEBUG_PRINTF("Carrinho iniciado com sucesso!\n");
+  // Manda mensagem de pareamento
   if (memoria.pareado)
   {
-    // manda mensagem para parear se apresentando ao transmissor
+    mensagem_t msg = {0};
+    msg.tipo = COMANDO_PAREAMENTO;
+    memcpy(msg.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(msg.payload.pareamento.senha));
+    memcpy(msg.payload.pareamento.mac, meu_mac, 6);
+    DEBUG_PRINTF("Respondendo para o transmissor com meu MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                 msg.payload.pareamento.mac[0], msg.payload.pareamento.mac[1],
+                 msg.payload.pareamento.mac[2], msg.payload.pareamento.mac[3],
+                 msg.payload.pareamento.mac[4], msg.payload.pareamento.mac[5]);
+    despachante_enfileirar(msg);
+  }
+  else
+  {
+    if (memoria.indice == 255)
+    {
+      memoria.periodo_telemetria_ms = 1000 + random(0, 500);
+    }
   }
 }
 
@@ -508,7 +490,7 @@ void loop()
       rodas[i].delta_ticks_target = 0;
   }
 
-  if (memoria.periodo_telemetria_ms != 0 && (millis_atual - millis_telemetria > memoria.periodo_telemetria_ms))
+  if (millis_atual - millis_telemetria > memoria.periodo_telemetria_ms)
   {
     millis_telemetria = millis_atual;
 
@@ -521,6 +503,7 @@ void loop()
       msg.payload.telemetria.delta_ticks_atual[i] = rodas[i].encoder.delta_ticks;
       msg.payload.telemetria.delta_ticks_target[i] = rodas[i].delta_ticks_target;
     }
+    memcpy(msg.payload.telemetria.mac, meu_mac, 6);
     msg.payload.telemetria.rssi_carrinho = ultimo_rssi;
     msg.payload.telemetria.noise_floor_carrinho = ultimo_noise_floor;
     msg.payload.telemetria.cnt_pacotes_totais = cnt_pacotes_totais;

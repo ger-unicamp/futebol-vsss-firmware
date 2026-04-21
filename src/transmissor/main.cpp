@@ -198,6 +198,21 @@ void setup()
   Serial.println("Tamanho da mensagem: " + String(sizeof(mensagem_t)) + " bytes");
   Serial.println("Transmissor iniciado com sucesso!");
   // Envio de pareamento automático para popular a lista de robos
+  uint8_t meu_mac[6] = {0};
+  esp_wifi_get_mac(WIFI_IF_STA, meu_mac);
+  mensagem_t msg = {0};
+  msg.tipo = COMANDO_PAREAMENTO;
+  memcpy(msg.payload.pareamento.senha, SENHA_PAREAMENTO, sizeof(msg.payload.pareamento.senha));
+  memcpy(msg.payload.pareamento.mac, meu_mac, 6);
+  Serial.printf("Enviando pareamento: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                msg.payload.pareamento.mac[0], msg.payload.pareamento.mac[1],
+                msg.payload.pareamento.mac[2], msg.payload.pareamento.mac[3],
+                msg.payload.pareamento.mac[4], msg.payload.pareamento.mac[5]);
+  esp_now_send(broadcastAddress, (uint8_t *)&msg, sizeof(msg));
+  delay(10);
+  esp_now_send(broadcastAddress, (uint8_t *)&msg, sizeof(msg));
+  delay(10);
+  esp_now_send(broadcastAddress, (uint8_t *)&msg, sizeof(msg));
 }
 
 void loop()

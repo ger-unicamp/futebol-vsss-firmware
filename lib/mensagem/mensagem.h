@@ -17,8 +17,9 @@ enum tipo_comando
   COMANDO_AUTOTUNE_PID = 0x06,
   COMANDO_PRINT = 0x07,
   COMANDO_SALVAR = 0x08,
-  COMANDO_CONFIG_SISTEMA = 0x09,
+  COMANDO_CONFIG = 0x09,
   COMANDO_TELEMETRIA = 0x0A,
+  COMANDO_PING = 0x0B,
 };
 
 typedef struct __attribute__((packed)) mensagem_t
@@ -26,7 +27,6 @@ typedef struct __attribute__((packed)) mensagem_t
   uint8_t tipo;             // O código do tipo_comando (1 byte)
   uint8_t indice_destino;   // Indice do carrinho (1 byte)
   uint8_t indice_remetente; // Indice do carrinho remetente, útil para respostas e comandos globais (1 byte)
-  uint8_t is_set;
 
   union Payload
   {
@@ -42,15 +42,14 @@ typedef struct __attribute__((packed)) mensagem_t
 
     struct __attribute__((packed))
     {
-      char senha[8];
       uint8_t mac[6];
-    } pareamento;
+    } ping;
 
     struct __attribute__((packed))
     {
-      uint8_t rssi;
+      char senha[8];
       uint8_t mac[6];
-    } echo;
+    } pareamento;
 
     struct __attribute__((packed))
     {
@@ -63,12 +62,13 @@ typedef struct __attribute__((packed)) mensagem_t
       uint8_t roda; // 0 para Esquerda, 1 para Direita
       float pwm_teste_max;
       float pwm_teste_min;
-      int ciclos;
-      int target_ticks;
+      uint16_t ciclos;
+      int16_t target_ticks;
     } autotune;
 
     struct __attribute__((packed))
     {
+      uint8_t is_set;
       uint8_t roda;
       float kp;
       float ki;
@@ -78,18 +78,21 @@ typedef struct __attribute__((packed)) mensagem_t
 
     struct __attribute__((packed))
     {
-      char texto[24]; // para nao aumentar o tamnho da mensagem, limitamos a 24 chars
+      char texto[28]; // teto da mensagem atual
     } print;
 
     struct __attribute__((packed))
     {
-      int passo_maximo_pwm;
-      uint32_t periodo_ttl_ms;
+      uint8_t is_set;
+      uint16_t passo_maximo_pwm;
+      uint16_t periodo_telemetria_ms;
+      uint16_t periodo_ttl_ms;
+      uint16_t periodo_controle_ms;
     } config_sistema;
 
     struct __attribute__((packed))
     {
-      uint16_t periodo_telemetria_ms;
+      uint8_t mac[6];
       int16_t delta_ticks_atual[2];
       int16_t delta_ticks_target[2];
       int8_t rssi_transmissor;
