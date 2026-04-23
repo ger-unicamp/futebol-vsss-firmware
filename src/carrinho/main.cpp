@@ -483,7 +483,7 @@ void loop()
       mover_motor(&rodas[i].motor, (int)pwm_saida[i]);
   }
 
-  if (periodo_ttl_ativo && millis_atual - millis_ttl > memoria.periodo_ttl_ms)
+  if (periodo_ttl_ativo && millis_atual > millis_ttl && millis_atual - millis_ttl > memoria.periodo_ttl_ms) // Acontece as vezes que millis_ttl > millis_atual, estoura o uint e vira um resultado super alto
   {
     millis_ttl = millis_atual;
     for (int i = 0; i < NUMERO_RODAS; i++)
